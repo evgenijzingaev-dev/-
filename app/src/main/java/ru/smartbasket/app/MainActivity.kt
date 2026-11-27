@@ -314,8 +314,30 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener{_,checked->prefs.edit().putBoolean("family_auto",checked).apply()}
         })
         val d=AlertDialog.Builder(this).setTitle("Моя семья").setView(ScrollView(this).apply{addView(panel)}).setPositiveButton("Закрыть",null).create()
-        members.forEachIndexed{i,m->panel.addView(link(m.name+" · "+m.age+" лет  ›"){d.dismiss();editFamily(i)})}
+        members.forEachIndexed{i,m->
+            panel.addView(link(m.name+" · "+m.age+" лет  ›"){d.dismiss();editFamily(i)})
+            panel.addView(link("Дневник питания"){d.dismiss();foodLogDialog(i)})
+        }
         if(members.size<12)addButton(panel,"Добавить члена семьи"){d.dismiss();editFamily(null)}
+        d.show()
+    }
+    private fun foodLogDialog(index:Int){
+        val member=family.read().getOrNull(index)?:return
+        val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
+        panel.addView(label("Последние записи. При включённой передаче профиля учитываются ChatGPT.",14f,gray))
+        family.log(index).forEach{panel.addView(label(it,14f,ink))}
+        val food=field(hint="Блюдо или продукт")
+        panel.addView(food)
+        val rating=Spinner(this).apply{adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Съедено","Понравилось","Не понравилось"))}
+        panel.addView(rating)
+        val d=AlertDialog.Builder(this).setTitle("Дневник · "+member.name).setView(ScrollView(this).apply{addView(panel)})
+            .setNegativeButton("Закрыть",null).setNeutralButton("Очистить"){_,_->family.clearLog(index);foodLogDialog(index)}
+            .setPositiveButton("Добавить",null).create()
+        d.setOnShowListener{d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener{
+            val value=food.text.toString().trim()
+            if(value.isBlank()||value.length>200)toast("Введи блюдо до 200 символов")
+            else{family.record(index,value,rating.selectedItem.toString());d.dismiss();foodLogDialog(index)}
+        }}
         d.show()
     }
     private fun editFamily(index:Int?){
