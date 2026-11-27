@@ -34,6 +34,9 @@ class CatalogSyncActivity:Activity(){
     private var done=0
     private var failed=0
     private var reading=false
+    @Volatile private var apiCancelled=false
+    private var apiRunning=false
+    private lateinit var apiButton:Button
     private fun dp(n:Int)=(n*resources.displayMetrics.density+.5f).toInt()
     private fun decode(raw:String)=try{JSONObject(JSONTokener(raw).nextValue() as String)}catch(_:Exception){null}
     override fun onCreate(state:Bundle?){
@@ -42,8 +45,9 @@ class CatalogSyncActivity:Activity(){
         status=TextView(this).apply{setPadding(dp(12),dp(10),dp(12),dp(10));textSize=16f;text="Выбери адрес доставки на сайте. Затем нажми «Загрузить каталог». Вся доступная выдача будет загружаться независимо от рецептов."}
         root.addView(status)
         start=Button(this).apply{text="Загрузить каталог";isAllCaps=false;setOnClickListener{begin()}}
-        stop=Button(this).apply{text="Остановить";isAllCaps=false;isEnabled=false;setOnClickListener{finishSync("Остановлено пользователем",false)}}
-        root.addView(start);root.addView(stop)
+        stop=Button(this).apply{text="Остановить";isAllCaps=false;isEnabled=false;setOnClickListener{if(apiRunning){apiCancelled=true;status.text="Отмена запроса…";stop.isEnabled=false}else finishSync("Остановлено пользователем",false)}}
+        apiButton=Button(this).apply{text="Загрузить через API (эксперимент)";isAllCaps=false;setOnClickListener{beginApi()}}
+        root.addView(apiButton);root.addView(start);root.addView(stop)
         web=WebView(this)
         web.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;allowFileAccess=false;allowContentAccess=false;mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW;setSupportMultipleWindows(false);javaScriptCanOpenWindowsAutomatically=false}
         CookieManager.getInstance().setAcceptCookie(true)
@@ -67,14 +71,48 @@ class CatalogSyncActivity:Activity(){
         root.addView(web,LinearLayout.LayoutParams(-1,0,1f));setContentView(root)
         web.loadUrl("https://5ka.ru/catalog/")
     }
+    private fun beginApi(){
+        if(active||apiRunning||!catalogPage(web.url.orEmpty())){Toast.makeText(this,"Сначала выбери адрес в каталоге",Toast.LENGTH_LONG).show();return}
+        apiButton.isEnabled=false;start.isEnabled=false
+        web.evaluateJavascript(storeScript){raw->
+            if(isFinishing||isDestroyed)return@evaluateJavascript
+            val code=try{JSONTokener(raw).nextValue() as String}catch(_:Exception){""}
+            if(!code.matches(Regex("[A-Za-z0-9_-]{1,40}"))){
+                apiButton.isEnabled=true;start.isEnabled=true;status.text="Магазин не определён. Выбери адрес доставки.";return@evaluateJavascript
+            }
+            apiRunning=true;apiCancelled=false;stop.isEnabled=true
+            status.text="API: магазин "+code+" · загрузка дерева категорий"
+            Thread{
+                try{
+                    val snapshot=CatalogApi({apiCancelled}).download(code){i,total,count->
+                        runOnUiThread{if(!isDestroyed&&!isFinishing&&apiRunning)status.text="API: категории "+i+"/"+total+" · товаров "+count}
+                    }
+                    runOnUiThread{
+                        if(isDestroyed||isFinishing)return@runOnUiThread
+                        web.evaluateJavascript(storeScript){current->
+                            if(isDestroyed||isFinishing)return@evaluateJavascript
+                            val confirmed=try{JSONTokener(current).nextValue() as String}catch(_:Exception){""}
+                            if(apiCancelled||confirmed!=code){endApi("Магазин изменился или загрузка отменена. Прежняя база сохранена.");return@evaluateJavascript}
+                            try{
+                                LocalCatalog(this).write(snapshot)
+                                endApi("Получено "+snapshot.entries.size+" товаров, обычных цен "+snapshot.entries.count{it.regular!=null}+". Полнота и акции ещё не подтверждены.")
+                                AlertDialog.Builder(this).setTitle("Каталог обновлён").setMessage(status.text).setPositiveButton("Готово"){_,_->setResult(RESULT_OK);finish()}.show()
+                            }catch(_:Exception){endApi("Ошибка записи базы.")}
+                        }
+                    }
+                }catch(e:Exception){runOnUiThread{if(!isDestroyed&&!isFinishing)endApi((e.message?:"Ошибка API")+". Прежняя база сохранена. Можно использовать загрузку через сайт.")}}
+            }.start()
+        }
+    }
+    private fun endApi(message:String){apiRunning=false;apiButton.isEnabled=true;start.isEnabled=true;stop.isEnabled=false;status.text=message}
     private fun begin(){
-        if(active||!catalogPage(web.url.orEmpty())){Toast.makeText(this,"Сначала открой каталог и выбери адрес",Toast.LENGTH_LONG).show();return}
-        start.isEnabled=false
+        if(active||apiRunning||!catalogPage(web.url.orEmpty())){Toast.makeText(this,"Сначала открой каталог и выбери адрес",Toast.LENGTH_LONG).show();return}
+        start.isEnabled=false;apiButton.isEnabled=false
         web.evaluateJavascript(storeScript){raw->
             if(isDestroyed||isFinishing)return@evaluateJavascript
             val code=try{JSONTokener(raw).nextValue() as String}catch(_:Exception){""}
             if(!code.matches(Regex("[A-Za-z0-9_-]{1,40}"))){
-                start.isEnabled=true;status.text="Не определён магазин доставки. Выбери адрес на сайте, затем повтори.";return@evaluateJavascript
+                start.isEnabled=true;apiButton.isEnabled=true;status.text="Не определён магазин доставки. Выбери адрес на сайте, затем повтори.";return@evaluateJavascript
             }
             store=code;queue.clear();seen.clear();products.clear();done=0;failed=0;active=true;stop.isEnabled=true
             enqueue("https://5ka.ru/catalog/");next()
@@ -140,7 +178,7 @@ class CatalogSyncActivity:Activity(){
         }
     }
     private fun finishSync(reason:String,ended:Boolean){
-        active=false;generation++;handler.removeCallbacksAndMessages(null);stop.isEnabled=false;start.isEnabled=true
+        active=false;generation++;handler.removeCallbacksAndMessages(null);stop.isEnabled=false;start.isEnabled=true;apiButton.isEnabled=true
         val count=products.size
         val priced=products.values.count{displayCatalogPrice(it.text)!=null}
         status.text=reason+". Найдено "+count+" товаров, цен "+priced+"."
@@ -149,7 +187,7 @@ class CatalogSyncActivity:Activity(){
         try{LocalCatalog(this).write(snapshot)}catch(_:Exception){Toast.makeText(this,"Ошибка сохранения базы",Toast.LENGTH_LONG).show();return}
         AlertDialog.Builder(this).setTitle("Каталог загружен частично или полностью по видимой выдаче").setMessage("Магазин: "+store+"\nТоваров: "+count+"\nС распознанной ценой: "+priced+"\nКатегорий обработано: "+done+"\nПроблемных: "+snapshot.failed+"\nПолный ассортимент не подтверждён. Цены требуют сверки перед заказом.").setPositiveButton("Готово"){_,_->setResult(RESULT_OK);finish()}.show()
     }
-    override fun onDestroy(){active=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
+    override fun onDestroy(){apiCancelled=true;active=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
     companion object {
         private val storeScript="""(function(){try{if(!['5ka.ru','www.5ka.ru'].includes(location.hostname))return '';const x=JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}');return String(x.selectedStore?.sapCode||'');}catch(e){return '';}})()"""
         private val scanScript="""

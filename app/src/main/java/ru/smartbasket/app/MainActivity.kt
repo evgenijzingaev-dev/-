@@ -211,7 +211,7 @@ class MainActivity : Activity() {
     private fun catalogLabel():String {
         val s=LocalCatalog(this).read()?:return "Каталог ещё не загружен"
         val date=java.text.DateFormat.getDateTimeInstance().format(java.util.Date(s.updated))
-        return "Магазин "+s.store+" · "+s.entries.size+" товаров · "+date+" · полнота не подтверждена"
+        return (if(s.source=="api")"API · " else "Сайт · ")+"Магазин "+s.store+" · "+s.entries.size+" товаров · "+date+" · полнота не подтверждена"
     }
     private fun syncCatalog(){startActivityForResult(Intent(this,CatalogSyncActivity::class.java),704)}
     private fun chooseFromCatalog(){
