@@ -28,7 +28,10 @@ class MainActivity : Activity() {
     private var budget = 300000L
     private var delivery = 0L
     private var portions = 3
-    private var tab = 0
+    private var tab = 3
+    private var days = 3
+    private var promptDraft = ""
+    private var currentPlan: MealPlan? = null
     private var guided = false
     private val reviewed = mutableSetOf<String>()
     private lateinit var body: LinearLayout
@@ -76,12 +79,89 @@ class MainActivity : Activity() {
         root.addView(label("Умная корзина",26f,green,true))
         root.addView(label("Планирование покупок • локальная версия",13f,gray))
         val tabs=horizontal()
-        listOf("Корзина","Рецепты","Магазин").forEachIndexed { i,s -> tabs.addView(button(s,tab==i){ tab=i; render() },LinearLayout.LayoutParams(0,dp(48),1f).apply { setMargins(dp(2),dp(8),dp(2),dp(10)) }) }
-        root.addView(tabs)
+        listOf(3 to "Главная",1 to "Рецепты",0 to "Корзина",2 to "Магазин").forEach { (i,s) -> tabs.addView(button(s,tab==i){tab=i;render()},LinearLayout.LayoutParams(0,dp(48),1f).apply { setMargins(dp(2),dp(8),dp(2),dp(2)) }) }
         val sc=ScrollView(this).apply { isFillViewport=true }
         body=vertical(); sc.addView(body); root.addView(sc,LinearLayout.LayoutParams(-1,0,1f))
+        root.addView(tabs)
         setContentView(root)
-        when(tab){ 0->basketScreen(); 1->recipeScreen(); else->storeScreen() }
+        when(tab){ 0->basketScreen(); 1->recipeScreen(); 2->storeScreen(); else->homeScreen() }
+    }
+    private fun homeScreen() {
+        val hero=card(body)
+        hero.addView(label("Что будем готовить?",24f,ink,true))
+        hero.addView(label("Меню и покупки в одном месте",15f,gray))
+        val input=EditText(this).apply {
+            setText(promptDraft);hint="Например: завтраки на 3 дня на 1500 ₽"
+            minLines=3;maxLines=6;gravity=Gravity.TOP
+            inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            setPadding(dp(12),dp(12),dp(12),dp(12));background=rounded(bg,12)
+            addTextChangedListener(object:android.text.TextWatcher{
+                override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){promptDraft=s?.toString().orEmpty()}
+                override fun afterTextChanged(s:android.text.Editable?){}
+            })
+        }
+        hero.addView(input,LinearLayout.LayoutParams(-1,-2))
+        addButton(hero,"Сказать голосом") { voice() }
+        gap(hero)
+        hero.addView(label("На сколько дней?",15f,gray,true))
+        val presets=horizontal()
+        listOf(1 to "Сегодня",3 to "3 дня",7 to "Неделя").forEach{(n,s)->presets.addView(button(s,days==n){days=n;render()},LinearLayout.LayoutParams(0,dp(48),1f).apply{setMargins(dp(2),0,dp(2),0)})}
+        hero.addView(presets)
+        hero.addView(label("Порций на блюдо",15f,gray,true))
+        val people=horizontal()
+        people.addView(button("−"){if(portions>1){portions--;save();render()}},LinearLayout.LayoutParams(0,dp(48),1f))
+        people.addView(label("$portions",24f,ink,true).apply{gravity=Gravity.CENTER},LinearLayout.LayoutParams(0,dp(48),1f))
+        people.addView(button("+"){if(portions<20){portions++;save();render()}},LinearLayout.LayoutParams(0,dp(48),1f))
+        hero.addView(people)
+        hero.addView(label("Бюджет",15f,gray,true))
+        val b=field((budget/100).toString(),"₽",true,true)
+        hero.addView(b)
+        addButton(hero,"Составить меню и список",true) {
+            try {
+                val limit=money(b.text.toString())?:throw IllegalArgumentException("Укажи бюджет")
+                val req=parseRequest(promptDraft,days,portions.coerceAtMost(20),limit)
+                previewPlan(buildPlan(req))
+            }catch(e:Exception){toast(e.message?:"Проверь запрос")}
+        }
+        hero.addView(label("Локальный подбор из встроенных рецептов. Цены магазина пока не известны.",13f,gray))
+        val quick=card(body)
+        quick.addView(label("Уже есть рецепт?",18f,ink,true))
+        addButton(quick,"Вставить обычный список покупок"){importDialog("")}
+        addButton(quick,"Выбрать блюда вручную"){tab=1;render()}
+        if(items.isNotEmpty()) {
+            val c=card(body);c.addView(label("Текущий список · ${items.size} поз.",18f,ink,true))
+            val s=summarize(items,budget,delivery)
+            c.addView(label(if(s.complete)rub(s.totalKnown) else "Цены ещё не проверены",15f,gray))
+            addButton(c,"Продолжить покупки",true){tab=0;render()}
+        }
+    }
+    private fun voice(){
+        try{
+            val i=Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE,"ru-RU")
+                .putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT,"Что будем готовить?")
+            startActivityForResult(i,702)
+        }catch(_:Exception){toast("Распознавание речи недоступно на устройстве")}
+    }
+    private fun previewPlan(plan:MealPlan) {
+        val proposed=plan.ingredients()
+        val menu=plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->"День $day\n"+meals.joinToString("\n"){"${it.kind}: ${it.recipe.name}"}}
+        val details="$menu\n\n${proposed.size} позиций · ${plan.portions} порц. · бюджет ${rub(plan.budget)}\nЦены не проверены. Это меню, а не подтверждённая корзина."
+        val d=AlertDialog.Builder(this).setTitle("Предварительное меню").setMessage(details)
+            .setNegativeButton("Назад",null).setPositiveButton(if(items.isEmpty())"Создать список" else "Заменить список"){_,_->
+                val previous=items.associateBy{key(it.name,it.unit)}
+                items=proposed.map{p->previous[key(p.name,p.unit)]?.let{p.copy(atHome=it.atHome,pack=it.pack,price=null)}?:p}
+                budget=plan.budget;portions=plan.portions;days=plan.meals.maxOf{it.day};currentPlan=plan;tab=0;update()
+            }
+        if(items.isNotEmpty())d.setNeutralButton("Добавить к списку"){_,_->
+            try{
+                items=merge(items,proposed.map{Ingredient(it.name,it.amount,it.unit)},1,1)
+                budget=plan.budget;portions=plan.portions;tab=0;update()
+            }catch(e:Exception){toast(e.message?:"Не удалось добавить")}
+        }
+        d.show()
     }
     private fun basketScreen() {
         val s=summarize(items,budget,delivery)
@@ -90,10 +170,13 @@ class MainActivity : Activity() {
         c.addView(label((if(s.complete) "Итого" else "Известный минимум")+": "+rub(s.totalKnown),20f,if(s.over) Color.rgb(175,46,32) else ink,true))
         c.addView(label(when { s.over -> "Превышение бюджета минимум на ${rub(s.totalKnown-budget)}"; !s.complete -> "Без цены/фасовки: ${s.unknown}. Бюджет пока не подтверждён."; else -> "Остаток бюджета: ${rub(budget-s.totalKnown)}" },14f,gray))
         c.addView(label("Доставка (введено вручную): ${rub(delivery)}",13f,gray))
+        if(items.any { it.need>0 && !it.checked }) addButton(c,"Подобрать товары в магазине",true) { startGuided() }
         addButton(c,"Бюджет и доставка") { budgetDialog() }
-        addButton(c,"Добавить продукт",true) { addDialog() }
-        addButton(c,"Импорт списка из ChatGPT") { importDialog("") }
-        if(items.any { it.need>0 && !it.checked }) addButton(c,"Собрать покупки по списку",true) { startGuided() }
+        val tools=horizontal()
+        tools.addView(button("＋ Продукт"){addDialog()},LinearLayout.LayoutParams(0,dp(48),1f))
+        tools.addView(button("Вставить список"){importDialog("")},LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(6)})
+        c.addView(tools)
+        currentPlan?.let { plan->addButton(c,"Посмотреть меню"){AlertDialog.Builder(this).setTitle("Меню").setMessage(plan.meals.joinToString("\n"){"День ${it.day} · ${it.kind}: ${it.recipe.name}"}).setPositiveButton("ОК",null).show()} }
         if(items.isEmpty()) { val empty=card(body); empty.addView(label("Пока нет покупок",18f,ink,true)); empty.addView(label("Выбери рецепты или добавь свои продукты.",14f,gray)); addButton(empty,"Выбрать рецепты") { tab=1;render() }; return }
         val progress = label("Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}",19f,ink,true)
         body.addView(progress)
@@ -119,7 +202,7 @@ class MainActivity : Activity() {
     }
     private fun storeScreen() {
         val c=card(body); c.addView(label("Пятёрочка",23f,green,true)); c.addView(label("Встроенный браузер открывает официальный сайт. Войди через X5ID, выбери адрес доставки. Сессия хранится в WebView на телефоне.",16f)); addButton(c,"Открыть магазин в приложении",true){openStore()}; addButton(c,"Скопировать список покупок"){copy(listText())}; c.addView(label("Для конкретного ингредиента нажми «В магазин», выбери товар и перенеси цену и фасовку. Добавление и проверка корзины выполняются на сайте. Режим экспериментальный.",14f,gray))
-        val help=card(body); help.addView(label("Передача из ChatGPT",19f,ink,true)); help.addView(label("Попроси ChatGPT вернуть список строк в формате: название;количество;г/мл/шт. Например: Молоко;500;мл. Передай текст через «Поделиться» (если доступно) или скопируй и вставь в импорт.",15f)); addButton(help,"Скопировать шаблон запроса"){copy("Составь список ингредиентов для выбранных рецептов. Верни только строки в формате название;количество;единица (г, мл или шт). Без цен, заголовков и нумерации.")}
+        val help=card(body); help.addView(label("Передача из ChatGPT",19f,ink,true)); help.addView(label("Поделись обычным списком ингредиентов из ChatGPT или вставь его на главной. Например: Молоко — 500 мл.",15f)); addButton(help,"Скопировать шаблон запроса"){copy("Составь список ингредиентов с количеством в граммах, миллилитрах или штуках, по одному продукту на строку.")}
     }
     private fun field(value:String="",hint:String="", numeric:Boolean=false, decimal:Boolean=false) = EditText(this).apply { setText(value); this.hint=hint; inputType=if(numeric) InputType.TYPE_CLASS_NUMBER or (if(decimal) InputType.TYPE_NUMBER_FLAG_DECIMAL else 0) else InputType.TYPE_CLASS_TEXT; setSingleLine(true) }
     private fun fields(vararg pairs: Pair<String,EditText>): LinearLayout = vertical().apply { setPadding(dp(20),dp(8),dp(20),dp(12)); for((s,e) in pairs){addView(label(s,14f,gray));addView(e)} }
@@ -141,13 +224,19 @@ class MainActivity : Activity() {
         }};dlg.show()
     }
     private fun importDialog(initial:String) {
-        val e=EditText(this).apply{setText(initial);hint="Молоко;500;мл\nЯйца;6;шт";minLines=5;maxLines=10;gravity=Gravity.TOP;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE}
-        val wrap=vertical().apply{setPadding(dp(16),dp(6),dp(16),dp(6));addView(label("Одна строка на продукт: название;количество;г/мл/шт",14f,gray));addView(e)}
-        dialog("Импорт покупок",wrap){ try {
-            require(e.text.length<=50000);val lines=e.text.toString().lineSequence().map{it.trim()}.filter{it.isNotEmpty()}.toList();require(lines.size in 1..200)
-            val parsed=lines.map{ val p=it.split(';').map(String::trim);require(p.size==3 && p[0].length in 1..120);Ingredient(p[0],p[1].toLong(),p[2]) }
-            val next=merge(items,parsed,1,1);items=next;tab=0;update();true
-        }catch(_:Exception){false} }
+        val e=EditText(this).apply{setText(initial);hint="Молоко — 500 мл\nЯйца 6 шт\nМука 1 кг";minLines=5;maxLines=10;gravity=Gravity.TOP;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE}
+        val wrap=vertical().apply{setPadding(dp(16),dp(6),dp(16),dp(6));addView(label("Вставь обычный список с количеством и единицей. Специальный формат не нужен.",14f,gray));addView(e)}
+        val dialog=AlertDialog.Builder(this).setTitle("Список покупок").setView(wrap).setNegativeButton("Отмена",null).setPositiveButton("Распознать",null).create()
+        dialog.setOnShowListener{dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener{
+            try{
+                val parsed=importIngredients(e.text.toString())
+                if(parsed.ingredients.isEmpty()){toast("Не найдены строки с количеством");return@setOnClickListener}
+                val next=merge(items,parsed.ingredients,1,1)
+                val list=parsed.ingredients.joinToString("\n"){"${it.name} · ${it.amount} ${it.unit}"}
+                val ignored=if(parsed.ignored.isEmpty())"" else "\n\nНе распознано (${parsed.ignored.size} строк):\n"+parsed.ignored.take(12).joinToString("\n")
+                AlertDialog.Builder(this).setTitle("Проверь список").setMessage(list+ignored).setNegativeButton("Назад",null).setPositiveButton("Добавить"){_,_->items=next;tab=0;update();dialog.dismiss()}.show()
+            }catch(ex:Exception){toast(ex.message?:"Не удалось распознать")}
+        }};dialog.show()
     }
     private fun listText()=items.filter{it.need>0 && !it.checked}.joinToString("\n"){"${it.name} — ${it.need} ${it.unit}"}.ifEmpty{"Список пуст"}
     private fun share(){startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,listText()),"Поделиться покупками"))}
@@ -176,6 +265,10 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==702){
+            if(resultCode==RESULT_OK){promptDraft=data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty();tab=3;render()}
+            return
+        }
         if(requestCode!=701)return
         if(resultCode!=RESULT_OK||data==null){guided=false;return}
         val k=data.getStringExtra("key")?:return
