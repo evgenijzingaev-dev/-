@@ -22,6 +22,7 @@ fun displayCatalogPrice(text:String):Long? {
     return money(m.groupValues[2].replace(" ","")+"."+m.groupValues[3])
 }
 class LocalCatalog(context:Context){
+    private val appContext=context.applicationContext
     private val file=AtomicFile(java.io.File(context.filesDir,"store-catalog.json"))
     fun read():CatalogSnapshot?=try{
         val j=JSONObject(file.readFully().toString(Charsets.UTF_8))
@@ -37,5 +38,6 @@ class LocalCatalog(context:Context){
         val stream=file.startWrite()
         try{stream.write(j.toString().toByteArray(Charsets.UTF_8));file.finishWrite(stream)}
         catch(e:Exception){file.failWrite(stream);throw e}
+        try{PriceHistory(appContext).use{it.record(s)}}catch(e:Exception){android.util.Log.w("PriceHistory","Price observations not saved",e)}
     }
 }
