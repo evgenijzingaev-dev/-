@@ -18,8 +18,8 @@ private val dinner get()=listOf(recipes[3],recipes[4],recipes[5],recipes[7])
 fun parseRequest(input:String, defaultDays:Int, defaultPortions:Int, defaultBudget:Long):PlanRequest {
     val s=normalized(input)
     require(s.length<=3000){"Запрос слишком длинный"}
-    require(!Regex("(?iu)\\b(без|аллерг\\p{L}*|нельзя|не ем|не едим|исключ\\p{L}*|веган\\p{L}*|вегетариан\\p{L}*)\\b").containsMatchIn(s)) {
-        "Ограничения питания пока не распознаются автоматически. Выбери подходящие рецепты вручную."
+    require(!Regex("(?iu)(?<![\\p{L}\\p{M}\\p{N}_])(без|аллерг\\p{L}*|нельзя|не ем|не едим|исключ\\p{L}*|веган\\p{L}*|вегетариан\\p{L}*)(?![\\p{L}\\p{M}\\p{N}_])").containsMatchIn(s)) {
+        "Меню не составлено: локальный подбор не проверяет ограничения питания. Выбери рецепты вручную."
     }
     val days=when{
         s.contains("недел")->7

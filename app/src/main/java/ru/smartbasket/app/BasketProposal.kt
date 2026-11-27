@@ -30,6 +30,9 @@ internal fun proposeBasket(args:JSONObject,previous:List<BasketItem>,snapshot:Ca
     return BasketProposal(proposed,fresh?.updated)
 }
 
+internal fun BasketProposal.previewRows(lookup: (String) -> ProductNutrition?): String =
+    items.joinToString("\n\n") { proposalItemLabel(it, lookup) }
+
 internal fun proposalItemLabel(item: BasketItem, lookup: (String) -> ProductNutrition?): String {
     val product = item.storeUrl.takeIf { it.isNotBlank() }?.let(lookup)
     val line = nutritionLine(item.name, item.amount.toDouble(), item.unit, product)

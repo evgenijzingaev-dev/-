@@ -249,7 +249,7 @@ class MainActivity : Activity() {
         val proposed=proposal.items
         val s=summarize(proposed,limit,shipping)
         val summary=if(s.complete)"Итого с доставкой: "+rub(s.totalKnown) else "Известный минимум с доставкой: "+rub(s.totalKnown)+" · без цены: "+s.unknown
-        val rows = proposed.joinToString("\n\n") { proposalItemLabel(it, nutritionCache::get) }
+        val rows = proposal.previewRows(nutritionCache::get)
         val warning=if(s.over)"\nПревышен текущий бюджет." else if(!s.complete)"\nБюджет не подтверждён." else ""
         AlertDialog.Builder(this).setTitle("Предложение ChatGPT")
             .setMessage(summary+warning+"\nБюджет: "+rub(limit)+"\nЦены предварительные.\n\n"+rows+"\n\nЗаменить текущий список? Заказ не оформляется.")

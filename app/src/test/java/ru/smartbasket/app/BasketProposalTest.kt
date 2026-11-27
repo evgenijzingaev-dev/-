@@ -38,4 +38,19 @@ class BasketProposalTest {
         assertTrue(missing.contains("КБЖУ на 150 г: нет данных"))
         assertTrue(proposalItemLabel(items.first()) { null }.contains("оценка · "))
     }
+
+    @Test fun maximumProposalShowsEveryIngredientIncludingItsNutritionStatus() {
+        val rows = org.json.JSONArray()
+        for (index in 1..100) {
+            rows.put(JSONObject().put("name", "Продукт $index").put("amount", index).put("unit", "г"))
+        }
+        val proposal = proposeBasket(JSONObject().put("items", rows), emptyList(), null, 1000)
+        val preview = proposal.previewRows { null }.split("\n\n")
+        assertEquals(100, preview.size)
+        for (index in 1..100) {
+            val row = preview[index - 1]
+            assertTrue(row.startsWith("Продукт $index — $index г\n"))
+            assertTrue(row.endsWith("КБЖУ на $index г: нет данных"))
+        }
+    }
 }
