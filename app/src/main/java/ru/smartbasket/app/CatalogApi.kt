@@ -35,10 +35,16 @@ class CatalogApi(private val cancelled:()->Boolean,private val getOverride:((Str
         }
         return JSONTokener(body).nextValue()
     }
+    /** Optional read-only product detail endpoint; use only when normal access is available. */
+    fun productDetail(store:String,plu:String):JSONObject{
+        require(store.matches(Regex("[A-Za-z0-9_-]{1,40}"))&&plu.matches(Regex("[0-9]{1,20}")))
+        return get(store+"/products/"+plu+"?mode=delivery&include_restrict=true") as? JSONObject
+            ?:throw IllegalStateException("Неизвестный формат карточки")
+    }
     fun download(store:String,progress:(Int,Int,Int)->Unit):CatalogSnapshot{
         require(store.matches(Regex("[A-Za-z0-9_-]{1,40}")))
-        val tree=get(store+"/categories?mode=delivery&include_restrict=true&include_subcategories=1") as? JSONArray?:throw IllegalStateException("Неизвестный формат дерева категорий")
-        val ids=leafCategories(tree)
+        val tree=get(store+"/categories?mode=delivery&include_restrict=true&include_subcategories=0") as? JSONArray?:throw IllegalStateException("Неизвестный формат дерева категорий")
+        val ids=primaryApiCategories(tree)
         require(ids.isNotEmpty()&&ids.size<=400){"Дерево категорий пустое или превышает лимит"}
         val entries=linkedMapOf<String,CatalogEntry>()
         for((i,id) in ids.withIndex()){
@@ -71,6 +77,16 @@ class CatalogApi(private val cancelled:()->Boolean,private val getOverride:((Str
         if(cancelled())throw IllegalStateException("Загрузка отменена")
         return CatalogSnapshot(store,System.currentTimeMillis(),ids.size,0,entries.values.toList(),"api")
     }
+}
+/** Use the catalog's top-level sections; nested promotional collections are not separate scans. */
+fun primaryApiCategories(tree:JSONArray):List<String>{
+    val result=linkedSetOf<String>()
+    for(i in 0 until tree.length()){
+        val id=tree.getJSONObject(i).optString("id")
+        require(id.matches(Regex("[A-Za-z0-9_-]{1,80}"))){"Некорректный ID категории"}
+        result.add(id)
+    }
+    return result.toList()
 }
 fun leafCategories(tree:JSONArray):List<String>{
     val result=linkedSetOf<String>()
