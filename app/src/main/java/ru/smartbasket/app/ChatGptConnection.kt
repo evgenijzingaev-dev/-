@@ -30,9 +30,12 @@ import javax.net.ssl.HttpsURLConnection
 private class OpenAiHttpException(val status:Int,val oauthCode:String=""):IllegalStateException("OpenAI HTTP "+status)
 
 private class ChatGptAuthorizationException(message: String) : IllegalStateException(message)
+private class ChatGptDnsException(val host:String,cause:java.net.UnknownHostException):java.io.IOException("DNS: "+host,cause)
 
 internal fun chatGptFailureMessage(error: Exception): String? =
     when {
+        error is ChatGptDnsException ->
+            "DNS не смог найти "+error.host+". Проверь интернет, DNS и доступ к OpenAI; затем повтори действие."
         generateSequence<Throwable>(error) { it.cause }.any { it is java.net.UnknownHostException } ->
             "Не удалось найти сервер ChatGPT (DNS). Проверь подключение к интернету и настройки DNS, затем повтори действие."
         error is ChatGptAuthorizationException -> error.message
@@ -40,6 +43,10 @@ internal fun chatGptFailureMessage(error: Exception): String? =
             "ChatGPT не принял данные входа. Подключи аккаунт снова."
         error is OpenAiHttpException && error.status == 403 ->
             "ChatGPT отказал в доступе. Проверь разрешения аккаунта."
+        error is OpenAiHttpException && error.status == 429 ->
+            "ChatGPT ограничил частоту запросов или исчерпан лимит. Проверь использование плана."
+        error is OpenAiHttpException && error.status >= 500 ->
+            "Сервис OpenAI временно недоступен. Повтори запрос позже."
         else -> null
     }
 
@@ -102,6 +109,7 @@ class ChatGptConnection(context:Context){
         c.instanceFollowRedirects=false;c.connectTimeout=15000;c.readTimeout=90000
         c.setRequestProperty("Accept",if(url.endsWith("/responses"))"text/event-stream" else "application/json")
         if(token!=null)c.setRequestProperty("Authorization","Bearer "+token)
+        try {
         if(body!=null){
             c.requestMethod="POST";c.doOutput=true;c.setRequestProperty("Content-Type",contentType)
             c.outputStream.use{it.write(body.toByteArray(Charsets.UTF_8))}
@@ -115,6 +123,8 @@ class ChatGptConnection(context:Context){
             c.disconnect();throw OpenAiHttpException(code,oauthCode)
         }
         return c
+        }catch(e:java.net.UnknownHostException){c.disconnect();throw ChatGptDnsException(URL(url).host,e)}
+         catch(e:Exception){c.disconnect();throw e}
     }
     private fun json(url:String,body:String?=null,contentType:String="application/json",token:String?=null):JSONObject{
         val c=request(url,body,contentType,token)
