@@ -40,6 +40,10 @@ class CatalogSyncActivity:Activity(){
     private var failed=0
     private var reading=false
     private var missingStoreSince=0L
+    private var retryCount=0
+    private var lastMotion=""
+    private var lastMotionAt=0L
+    private var callbackWatchdog:Runnable?=null
     private var lastScan="Сканирование ещё не началось"
     private var apiFailure=""
     @Volatile private var apiCancelled=false
@@ -162,11 +166,44 @@ class CatalogSyncActivity:Activity(){
     private fun next(){
         generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
         if(queue.isEmpty()){finishSync("Доступные категории обработаны",true);return}
-        current=queue.removeFirst();rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L;pageProducts.clear()
+        current=queue.removeFirst();retryCount=0;pageProducts.clear()
+        openCurrent()
+    }
+    private fun openCurrent(){
+        rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L
+        lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime()
+        callbackWatchdog=null
         status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
         val g=generation;web.loadUrl(current)
-        handler.postDelayed({if(active&&generation==g){failed++;if(atRoot())enqueueRootSections() else done++;next()}},360000)
+        handler.postDelayed({if(active&&generation==g)skipStalled("Превышено время загрузки категории")},900000)
         schedule(g,5000)
+    }
+    private fun skipStalled(reason:String){
+        lastScan=reason+" · "+lastScan
+        failed++
+        if(atRoot()) {
+            if(rootSections.isEmpty()){finishSync(reason,false);return}
+            enqueueRootSections()
+        } else done++
+        next()
+    }
+    private fun recoverStalled(reason:String){
+        if(!active)return
+        if(retryCount>=1){skipStalled(reason);return}
+        retryCount++
+        generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
+        web.stopLoading()
+        openCurrent()
+        status.text=reason+". Повторное открытие категории (1/1); собранные товары сохранены."
+    }
+    private fun watchCallback(g:Int){
+        clearCallbackWatchdog()
+        val task=Runnable{if(active&&generation==g&&reading)recoverStalled("Сайт перестал отвечать")}
+        callbackWatchdog=task;handler.postDelayed(task,15000)
+    }
+    private fun clearCallbackWatchdog(){
+        callbackWatchdog?.let{handler.removeCallbacks(it)}
+        callbackWatchdog=null
     }
     private fun schedule(g:Int,ms:Long){
         pendingRead?.let{handler.removeCallbacks(it)}
@@ -175,18 +212,22 @@ class CatalogSyncActivity:Activity(){
     }
     private fun read(g:Int){
         if(reading||!active||g!=generation)return
-        if(!samePage(web.url.orEmpty(),current)){lastScan="Ожидание страницы каталога";status.text=lastScan;schedule(g,3000);return}
-        reading=true
+        if(!samePage(web.url.orEmpty(),current)){
+            lastScan="Ожидание страницы каталога";status.text=lastScan
+            if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=45000L)recoverStalled(lastScan) else schedule(g,3000)
+            return
+        }
+        reading=true;watchCallback(g)
         web.evaluateJavascript(scanScript){raw->
             if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
-            val j=decode(raw);reading=false
+            clearCallbackWatchdog();val j=decode(raw);reading=false
             val actual=j?.optString("store").orEmpty()
             if(actual.isBlank()){
                 val now=android.os.SystemClock.elapsedRealtime()
                 if(missingStoreSince==0L)missingStoreSince=now
                 lastScan=if(j==null) "Скрипт не вернул данные страницы" else "Страница ещё не подтвердила магазин"
                 status.text=lastScan
-                if(now-missingStoreSince>=25000L)finishSync(lastScan,false) else schedule(g,2500)
+                if(now-missingStoreSince>=25000L)recoverStalled(lastScan) else schedule(g,2500)
                 return@evaluateJavascript
             }
             if(actual!=store){finishSync("Магазин доставки изменился. Выгрузка остановлена.",false);return@evaluateJavascript}
@@ -220,11 +261,17 @@ class CatalogSyncActivity:Activity(){
             rounds++
             val pageState=j.optString("pageState")
             val now=android.os.SystemClock.elapsedRealtime()
+            val motion=pageState+"|"+j.optInt("scrollTop")
+            if(added>0||motion!=lastMotion){lastMotion=motion;lastMotionAt=now}
+            val idle=now-lastMotionAt
             if(added>0||pageState!=lastPageState||j.optBoolean("loading")||!j.optBoolean("bottom")||j.optBoolean("more")){
                 lastPageState=pageState;stableSince=now
             }else if(stableSince==0L)stableSince=now
-            status.text="Категорий обработано: "+done+" · найдено товаров: "+products.size+" · страниц в очереди: "+queue.size
-            if(products.size>=30000||rounds>=150){
+            status.text="Категорий обработано: "+done+" · найдено товаров: "+products.size+" · в очереди: "+queue.size+
+                "\n"+(if(j.optBoolean("loading"))"Ожидание подгрузки" else if(j.optBoolean("bottom"))"Проверка конца категории" else "Прокрутка")+
+                " · без изменений "+(idle/1000)+" с"
+            if(idle>=45000L){recoverStalled("Каталог не меняется 45 секунд");return@evaluateJavascript}
+            if(products.size>=30000||rounds>=600){
                 failed++
                 if(atRoot())enqueueRootSections() else done++
                 if(products.size>=30000)finishSync("Достигнут лимит выгрузки",false)else next()
@@ -242,10 +289,10 @@ class CatalogSyncActivity:Activity(){
                 next();return@evaluateJavascript
             }
             if(j.optBoolean("loading")||(j.optBoolean("bottom")&&!j.optBoolean("more"))){schedule(g,2500);return@evaluateJavascript}
-            reading=true
+            reading=true;watchCallback(g)
             web.evaluateJavascript(advanceScript){_ ->
                 if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
-                reading=false;schedule(g,1800)
+                clearCallbackWatchdog();reading=false;schedule(g,1800)
             }
         }
     }
@@ -288,10 +335,36 @@ class CatalogSyncActivity:Activity(){
             "для животных" to "животные","кухня, дом, дача" to "дом","для дома и дачи" to "дом"
         )
         private val storeScript="""(function(){try{if(!['5ka.ru','www.5ka.ru'].includes(location.hostname))return '';const x=JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}');return String(x.selectedStore?.sapCode||'');}catch(e){return '';}})()"""
+        private val scrollHelpers="""
+            const root=document.scrollingElement||document.documentElement;
+            const isRootCatalog=location.pathname.replace(/\/$/,'')==='/catalog';
+            const anchorSelector=isRootCatalog?'a[href*="/catalog/"]':'a[href*="/product/"]';
+            const anchors=[...document.querySelectorAll(anchorSelector)];
+            const scores=new Map();
+            for(const a of anchors.slice(0,250)){
+              if(!a.getClientRects().length)continue;
+              for(let p=a.parentElement;p&&p!==root&&p!==document.body&&p!==document.documentElement;p=p.parentElement){
+                const css=getComputedStyle(p);
+                if(/^(auto|scroll|overlay)$/.test(css.overflowY)&&p.clientHeight>=Math.min(180,window.innerHeight*0.4)&&p.scrollHeight-p.clientHeight>20){
+                  scores.set(p,(scores.get(p)||0)+1);break;
+                }
+              }
+            }
+            let scroll=root,bestScore=0;
+            for(const [p,n] of scores){if(n>bestScore){scroll=p;bestScore=n;}}
+            const viewport=scroll===root?{top:0,bottom:window.innerHeight}:scroll.getBoundingClientRect();
+            const near=e=>{const r=e.getBoundingClientRect();return e.getClientRects().length>0&&r.bottom>=viewport.top&&r.top<=viewport.bottom;};
+            const moreButtons=[...document.querySelectorAll('button,[role="button"]')].filter(x=>near(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)(?:\s+\d+)?$/i.test((x.innerText||'').trim()));
+            const bottom=scroll.scrollTop+scroll.clientHeight>=scroll.scrollHeight-20;
+            const loading=bottom&&[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(x=>{
+              const r=x.getBoundingClientRect();return near(x)&&(scroll===root||scroll.contains(x))&&r.bottom>=viewport.bottom-Math.max(120,scroll.clientHeight*0.35);
+            });
+        """.trimIndent()
         private val scanScript="""
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return '{}';
               let store='';try{store=String(JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}').selectedStore?.sapCode||'');}catch(e){}
+              ${scrollHelpers}
               const categories=new Map(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
               for(const a of document.querySelectorAll('a[href]')){
                 if(!visible(a))continue;
@@ -303,7 +376,7 @@ class CatalogSyncActivity:Activity(){
                 }
                 if(!u.pathname.startsWith('/product/'))continue;
                 const rect=a.getBoundingClientRect();
-                if(rect.bottom < -window.innerHeight || rect.top > window.innerHeight*2)continue;
+                if(rect.bottom < viewport.top-scroll.clientHeight || rect.top > viewport.bottom+scroll.clientHeight)continue;
                 let t=(a.innerText||'').trim();
                 if(!t.includes('₽')){
                   let p=a.parentElement;
@@ -324,20 +397,21 @@ class CatalogSyncActivity:Activity(){
                   products.set(u.pathname,{url:u.origin+u.pathname,text:t,image:img?.currentSrc||img?.src||''});
                 }
               }
-              const more=[...document.querySelectorAll('button,[role="button"]')].filter(b=>visible(b)&&!b.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((b.innerText||'').trim())).length===1;
-              const root=document.scrollingElement||document.documentElement;
               const cards=document.querySelectorAll('a[href*="/product/"]');
-              const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible);
-              const pageState=cards.length+'|'+root.scrollHeight+'|'+(cards.length?cards[cards.length-1].href:'');
-              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],cardCount:cards.length,more,loading,pageState,bottom:root.scrollTop+root.clientHeight>=root.scrollHeight-20});
+              const pageState=cards.length+'|'+scroll.scrollHeight+'|'+(cards.length?cards[cards.length-1].href:'');
+              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],cardCount:cards.length,more:bottom&&moreButtons.length===1,loading,pageState,scrollTop:Math.round(scroll.scrollTop),bottom});
             })()
         """.trimIndent()
         private val advanceScript="""
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
-              const b=[...document.querySelectorAll('button,[role="button"]')].filter(x=>x.getClientRects().length>0&&!x.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((x.innerText||'').trim()));
-              if(b.length===1){b[0].click();return true;}
-              window.scrollBy(0,Math.max(300,window.innerHeight*0.85));return true;
+              ${scrollHelpers}
+              if(moreButtons.length===1&&bottom){moreButtons[0].click();return true;}
+              if(!bottom){
+                const step=Math.max(80,Math.floor(scroll.clientHeight*0.75));
+                scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+step);
+              }
+              return true;
             })()
         """.trimIndent()
     }
