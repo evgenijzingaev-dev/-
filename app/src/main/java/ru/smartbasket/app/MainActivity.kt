@@ -29,6 +29,8 @@ class MainActivity : Activity() {
     private var delivery = 0L
     private var portions = 3
     private var tab = 0
+    private var guided = false
+    private val reviewed = mutableSetOf<String>()
     private lateinit var body: LinearLayout
     private fun dp(v: Int) = (v * resources.displayMetrics.density + .5f).toInt()
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,6 +93,7 @@ class MainActivity : Activity() {
         addButton(c,"Бюджет и доставка") { budgetDialog() }
         addButton(c,"Добавить продукт",true) { addDialog() }
         addButton(c,"Импорт списка из ChatGPT") { importDialog("") }
+        if(items.any { it.need>0 && !it.checked }) addButton(c,"Собрать покупки по списку",true) { startGuided() }
         if(items.isEmpty()) { val empty=card(body); empty.addView(label("Пока нет покупок",18f,ink,true)); empty.addView(label("Выбери рецепты или добавь свои продукты.",14f,gray)); addButton(empty,"Выбрать рецепты") { tab=1;render() }; return }
         val progress = label("Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}",19f,ink,true)
         body.addView(progress)
@@ -149,15 +152,32 @@ class MainActivity : Activity() {
     private fun listText()=items.filter{it.need>0 && !it.checked}.joinToString("\n"){"${it.name} — ${it.need} ${it.unit}"}.ifEmpty{"Список пуст"}
     private fun share(){startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,listText()),"Поделиться покупками"))}
     private fun copy(s:String){(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Покупки",s));toast("Скопировано")}
+    private fun startGuided() {
+        if(summarize(items,budget,delivery).over){toast("Известные расходы уже выше бюджета. Измени цены или бюджет.");return}
+        AlertDialog.Builder(this).setTitle("Сбор покупок").setMessage("Пройдём по непокупленным ингредиентам. Выбирай товары в магазине и подтверждай цену. Сбор не оплачивает заказ, не очищает существующую корзину и не считает товары добавленными без проверки.").setNegativeButton("Отмена",null).setPositiveButton("Начать"){_,_->
+            reviewed.clear();guided=true;nextGuided()
+        }.show()
+    }
+    private fun nextGuided() {
+        val next=items.indexOfFirst{it.need>0&&!it.checked&&key(it.name,it.unit) !in reviewed}
+        if(next<0){guided=false;toast("Список просмотрен. Сверь фактическую корзину и итог в магазине.");return}
+        openStore(next)
+    }
     private fun openStore(index:Int = -1) {
         val i=items.getOrNull(index)
         val intent=Intent(this,StoreActivity::class.java)
-        if(i!=null) intent.putExtra("name",i.name).putExtra("unit",i.unit).putExtra("need",i.need).putExtra("key",key(i.name,i.unit))
+        if(i!=null) {
+            val other=items.filterIndexed { n,_->n!=index }
+            val summary=summarize(other,budget,delivery)
+            intent.putExtra("name",i.name).putExtra("unit",i.unit).putExtra("need",i.need).putExtra("key",key(i.name,i.unit))
+                .putExtra("room",budget-summary.totalKnown).putExtra("unknown",summary.unknown)
+        }
         startActivityForResult(intent,701)
     }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
-        if(requestCode!=701||resultCode!=RESULT_OK||data==null)return
+        if(requestCode!=701)return
+        if(resultCode!=RESULT_OK||data==null){guided=false;return}
         val k=data.getStringExtra("key")?:return
         val pack=data.getLongExtra("pack",0)
         val price=data.getLongExtra("price",-1)
@@ -166,6 +186,11 @@ class MainActivity : Activity() {
         if(index<0)return
         items=items.toMutableList().also{it[index]=it[index].copy(pack=pack,price=price)}
         tab=0;update();toast("Цена и фасовка перенесены. Проверь корзину магазина.")
+        if(guided) {
+            reviewed.add(k)
+            if(summarize(items,budget,delivery).over){guided=false;toast("Сбор остановлен: бюджет превышен.")}
+            else nextGuided()
+        }
     }
     private fun toast(s:String){Toast.makeText(this,s,Toast.LENGTH_SHORT).show()}
 }

@@ -18,11 +18,15 @@ class StoreActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var scan: Button
     private lateinit var transfer: Button
+    private lateinit var add: Button
+    private val room get()=intent.getLongExtra("room",Long.MAX_VALUE)
+    private val unknown get()=intent.getIntExtra("unknown",0)
+    private var attempted=false
     private val ingredient get()=intent.getStringExtra("name").orEmpty()
     private val unit get()=intent.getStringExtra("unit").orEmpty()
     private val need get()=intent.getLongExtra("need",0)
     private var chosen: Candidate?=null
-    private data class Candidate(val url:String,val description:String,val pack:Long,val price:Long)
+    private data class Candidate(val url:String,val offer:StoreOffer){val description get()=offer.description;val pack get()=offer.pack;val price get()=offer.price}
     private fun dp(v:Int)=(v*resources.displayMetrics.density+.5f).toInt()
     private fun official(u:Uri)=u.scheme=="https"&&u.port in listOf(-1,443)&&u.userInfo==null&&u.host in setOf("5ka.ru","www.5ka.ru","id.x5.ru","id-prev.x5.ru")
     private fun catalog(u:Uri)=official(u)&&u.host in setOf("5ka.ru","www.5ka.ru")&&(u.path.orEmpty().startsWith("/catalog/")||u.path.orEmpty().startsWith("/product/"))
@@ -40,7 +44,8 @@ class StoreActivity : Activity() {
         layout.addView(status)
         scan=button("Считать видимые товары"){readCards()};scan.isEnabled=false
         transfer=button("Перенести цену и фасовку"){confirmPrice(chosen)};transfer.isEnabled=ingredient.isNotBlank()
-        if(ingredient.isNotBlank()){layout.addView(scan);layout.addView(transfer)}
+        add=button("Добавить одну упаковку в магазин"){addSelected()};add.isEnabled=false
+        if(ingredient.isNotBlank()){layout.addView(scan);layout.addView(add);layout.addView(transfer)}
         web=WebView(this)
         web.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;allowFileAccess=false;allowContentAccess=false;mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW;javaScriptCanOpenWindowsAutomatically=false;setSupportMultipleWindows(false)}
         CookieManager.getInstance().setAcceptCookie(true)
@@ -54,12 +59,13 @@ class StoreActivity : Activity() {
                 return true
             }
             override fun onPageStarted(view:WebView,url:String,favicon:android.graphics.Bitmap?){
-                scan.isEnabled=false
+                scan.isEnabled=false;add.isEnabled=false
                 if(!official(Uri.parse(url)))view.stopLoading()
             }
             override fun onPageFinished(view:WebView,url:String){
                 CookieManager.getInstance().flush()
                 scan.isEnabled=ingredient.isNotBlank()&&catalog(Uri.parse(url))
+                add.isEnabled=!attempted&&chosen?.url==url&&product(Uri.parse(url))
                 if(ingredient.isNotBlank())status.text="$ingredient — купить $need $unit. Цены зависят от выбранного адреса."
             }
             override fun onReceivedSslError(view:WebView,handler:SslErrorHandler,error:SslError){handler.cancel();status.text="Ошибка защищённого соединения. Загрузка остановлена."}
@@ -83,6 +89,14 @@ class StoreActivity : Activity() {
                 var u=new URL(a.href,location.href);
                 if(u.origin!==location.origin||!u.pathname.startsWith('/product/')||seen.has(u.pathname)||a.getClientRects().length===0)continue;
                 var t=(a.innerText||'').trim();
+                if(!/цена/i.test(t)||!t.includes('₽')){
+                  var p=a.parentElement;
+                  for(var j=0;j<3&&p;j++,p=p.parentElement){
+                    if(p.querySelectorAll('a[href*="/product/"]').length>2)break;
+                    var v=(p.innerText||'').trim();
+                    if(/цена/i.test(v)&&v.includes('₽')&&v.length<=1000){t=v;break;}
+                  }
+                }
                 if(!/цена/i.test(t)||!t.includes('₽')||t.length>1000)continue;
                 seen.add(u.pathname);found.push({url:u.origin+u.pathname,text:t});if(found.length>=100)break;
               }
@@ -95,35 +109,53 @@ class StoreActivity : Activity() {
             val candidates=try{
                 val arr=JSONArray(JSONTokener(raw).nextValue() as String)
                 (0 until arr.length()).mapNotNull{n->val o=arr.getJSONObject(n);parse(o.getString("url"),o.getString("text"))}
-                    .sortedBy { if(need>0) ((need-1)/it.pack+1)*it.price else it.price }
+                    .filter{offerMatches(ingredient,it.description)}
+                    .sortedWith(compareBy<Candidate>{it.offer.conditional}.thenBy{it.offer.total(need)})
             }catch(_:Exception){emptyList()}
             if(candidates.isEmpty()){
                 AlertDialog.Builder(this).setTitle("Товары не распознаны").setMessage("Открой категорию или воспользуйся поиском сайта. Если формат карточек изменился, введи цену и фасовку вручную. Защиту сайта приложение не обходит.").setPositiveButton("ОК",null).show()
                 return@evaluateJavascript
             }
-            val labels=candidates.map{c->"${c.description}\n${c.pack} $unit · ${rub(c.price)} за упаковку · нужно ${if(need>0)(need-1)/c.pack+1 else 0} уп."}.toTypedArray()
+            val labels=candidates.map{c->"${c.description}\n${c.offer.packages(need)} уп. × ${rub(c.price)} = ${rub(c.offer.total(need))}" +
+                (if(c.offer.conditional) " • условная акция, проверь" else "") +
+                (if(c.offer.total(need)>room) " • выше остатка бюджета" else "")}.toTypedArray()
             AlertDialog.Builder(this).setTitle("Выбери подходящий продукт").setItems(labels){_,n->
-                chosen=candidates[n];web.loadUrl(candidates[n].url)
-                Toast.makeText(this,"Проверь товар и добавь нужное количество на сайте. Затем перенеси цену.",Toast.LENGTH_LONG).show()
+                chosen=candidates[n];attempted=false;add.isEnabled=false;web.loadUrl(candidates[n].url)
+                Toast.makeText(this,"Проверь товар. Можно добавить одну упаковку кнопкой приложения, остальные — на сайте.",Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
         }
     }
-    private fun parse(url:String,raw:String):Candidate?{
+    private fun parse(url:String,raw:String):Candidate? {
         if(!product(Uri.parse(url)))return null
-        val t=raw.replace(Regex("[\\s\\u00a0\\u202f]+")," ").trim()
-        val prices=Regex("(?i)цена\\s+([0-9][0-9 ]*?)(?:[.,]| )([0-9]{2})\\s*₽").findAll(t).toList()
-        val p=prices.lastOrNull()?:return null
-        val price=money(p.groupValues[1].replace(" ","")+"."+p.groupValues[2])?:return null
-        val before=t.substring(0,t.indexOf("Цена",ignoreCase=true).takeIf{it>=0}?:return null).replace(Regex("(?i)старая $"),"").trim()
-        if(before.contains("за 1 кг",true)||before.contains("за 1 л",true))return null
-        val q=Regex("(?i)([0-9]+(?:[.,][0-9]+)?)\\s*(кг|мл|г|л|шт)\\s*$").find(before)?:return null
-        val value=q.groupValues[1].replace(',','.').toBigDecimalOrNull()?:return null
-        val u=q.groupValues[2].lowercase()
-        val base=when(u){"кг"->"г";"л"->"мл";else->u}
-        if(base!=unit)return null
-        val pack=try{(if(u=="кг"||u=="л")value.multiply(java.math.BigDecimal(1000)) else value).longValueExact()}catch(_:Exception){return null}
-        if(pack !in 1..10_000_000)return null
-        return Candidate(url,before.take(220),pack,price)
+        return parseStoreOffer(raw,unit)?.let{Candidate(url,it)}
+    }
+    private fun addSelected(){
+        val c=chosen?:return
+        if(attempted||web.url!=c.url||!product(Uri.parse(c.url)))return
+        if(c.offer.conditional){Toast.makeText(this,"Проверь условия акции и добавь товар вручную.",Toast.LENGTH_LONG).show();return}
+        if(c.offer.total(need)>room){Toast.makeText(this,"Все нужные упаковки превышают остаток бюджета.",Toast.LENGTH_LONG).show();return}
+        val message="Добавить одну упаковку на текущей странице? Нужно ${c.offer.packages(need)} уп., расчёт ${rub(c.offer.total(need))}. Сайт может изменить цену. "+if(unknown>0)"У других $unknown позиций нет подтверждённой цены. Бюджет пока не гарантирован."else"Сверь итог с магазином."
+        AlertDialog.Builder(this).setTitle("Добавление в корзину").setMessage(message).setNegativeButton("Отмена",null).setPositiveButton("Добавить 1"){_,_->
+            if(attempted||web.url!=c.url)return@setPositiveButton
+            attempted=true;add.isEnabled=false
+            // One explicit user-authorized DOM click. Never checkout, repeat, or call private endpoints.
+            val expected=org.json.JSONObject.quote(c.url)
+            web.evaluateJavascript("""
+                (function(){
+                  if(location.origin+location.pathname!==$expected)return 'wrong-page';
+                  var buttons=[...document.querySelectorAll('button,[role="button"]')].filter(function(b){
+                    return b.getClientRects().length>0&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'&&
+                      (b.innerText||'').trim().toLowerCase()==='в корзину';
+                  });
+                  if(buttons.length!==1)return 'ambiguous';
+                  buttons[0].click();return 'clicked';
+                })()
+            """.trimIndent()){raw->
+                if(isFinishing||isDestroyed)return@evaluateJavascript
+                val text=if(raw=="\"clicked\"")"Нажатие отправлено. Проверь, появился ли товар в корзине; добавь остальные упаковки вручную." else "Однозначная кнопка не найдена. Добавь товар вручную на сайте."
+                AlertDialog.Builder(this).setTitle("Проверка корзины").setMessage(text).setPositiveButton("ОК",null).show()
+            }
+        }.show()
     }
     private fun confirmPrice(c:Candidate?){
         val k=intent.getStringExtra("key")?:return
@@ -136,6 +168,8 @@ class StoreActivity : Activity() {
         d.setOnShowListener{d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener{
             val q=pack.text.toString().toLongOrNull();val p=money(price.text.toString())
             if(q==null||q !in 1..10_000_000||p==null){Toast.makeText(this,"Проверь значения",Toast.LENGTH_SHORT).show();return@setOnClickListener}
+            val cost=((need.coerceAtLeast(1)-1)/q+1)*p
+            if(cost>room){Toast.makeText(this,"Превышение остатка бюджета. Выбери другой товар.",Toast.LENGTH_LONG).show();return@setOnClickListener}
             setResult(RESULT_OK,Intent().putExtra("key",k).putExtra("pack",q).putExtra("price",p));d.dismiss();finish()
         }};d.show()
     }
