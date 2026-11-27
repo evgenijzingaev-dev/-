@@ -33,7 +33,9 @@ class CatalogSyncActivity:Activity(){
     private val rootPath="/catalog/"
     private fun atRoot()=Uri.parse(current).path.orEmpty().trimEnd('/')==rootPath.trimEnd('/')
     private var rounds=0
-    private var stable=0
+    private var stableSince=0L
+    private var lastPageState=""
+    private var pendingRead:Runnable?=null
     private var done=0
     private var failed=0
     private var reading=false
@@ -153,15 +155,19 @@ class CatalogSyncActivity:Activity(){
         rootSections.values.forEach(::enqueue)
     }
     private fun next(){
-        generation++;handler.removeCallbacksAndMessages(null);reading=false
+        generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
         if(queue.isEmpty()){finishSync("Доступные категории обработаны",true);return}
-        current=queue.removeFirst();rounds=0;stable=0;pageProducts.clear()
+        current=queue.removeFirst();rounds=0;stableSince=0L;lastPageState="";pageProducts.clear()
         status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
         val g=generation;web.loadUrl(current)
         handler.postDelayed({if(active&&generation==g){failed++;if(atRoot())enqueueRootSections() else done++;next()}},360000)
         schedule(g,5000)
     }
-    private fun schedule(g:Int,ms:Long){handler.postDelayed({if(active&&generation==g)read(g)},ms)}
+    private fun schedule(g:Int,ms:Long){
+        pendingRead?.let{handler.removeCallbacks(it)}
+        val task=Runnable{pendingRead=null;if(active&&generation==g)read(g)}
+        pendingRead=task;handler.postDelayed(task,ms)
+    }
     private fun read(g:Int){
         if(reading||!active||g!=generation)return
         if(!samePage(web.url.orEmpty(),current)){schedule(g,3000);return}
@@ -194,7 +200,12 @@ class CatalogSyncActivity:Activity(){
                     if(old==null||displayCatalogPrice(text)!=null||displayCatalogPrice(old.text)==null)products[k]=CatalogEntry(url,text)
                 }
             }
-            rounds++;stable=if(added==0)stable+1 else 0
+            rounds++
+            val pageState=j.optString("pageState")
+            val now=android.os.SystemClock.elapsedRealtime()
+            if(added>0||pageState!=lastPageState||j.optBoolean("loading")||!j.optBoolean("bottom")||j.optBoolean("more")){
+                lastPageState=pageState;stableSince=now
+            }else if(stableSince==0L)stableSince=now
             status.text="Категорий обработано: "+done+" · найдено товаров: "+products.size+" · страниц в очереди: "+queue.size
             if(products.size>=30000||rounds>=150){
                 failed++
@@ -203,7 +214,7 @@ class CatalogSyncActivity:Activity(){
                 return@evaluateJavascript
             }
             // Also scroll the root catalog: categories can load below banners.
-            if(stable>=3&&j.optBoolean("bottom")&&!j.optBoolean("more")){
+            if(now-stableSince>=12000L&&j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")){
                 if(atRoot()){
                     enqueueRootSections()
                 }else{
@@ -212,6 +223,7 @@ class CatalogSyncActivity:Activity(){
                 }
                 next();return@evaluateJavascript
             }
+            if(j.optBoolean("loading")||(j.optBoolean("bottom")&&!j.optBoolean("more"))){schedule(g,2500);return@evaluateJavascript}
             reading=true
             web.evaluateJavascript(advanceScript){_ ->
                 if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
@@ -265,6 +277,8 @@ class CatalogSyncActivity:Activity(){
                   if(title)categories.set(u.pathname+'|'+title,{url:u.origin+u.pathname,title});
                 }
                 if(!u.pathname.startsWith('/product/'))continue;
+                const rect=a.getBoundingClientRect();
+                if(rect.bottom < -window.innerHeight || rect.top > window.innerHeight*2)continue;
                 let t=(a.innerText||'').trim();
                 if(!t.includes('₽')){
                   let p=a.parentElement;
@@ -278,7 +292,11 @@ class CatalogSyncActivity:Activity(){
                 if(t.length>0&&t.length<=1200)products.set(u.pathname,{url:u.origin+u.pathname,text:t});
               }
               const more=[...document.querySelectorAll('button,[role="button"]')].filter(b=>visible(b)&&!b.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((b.innerText||'').trim())).length===1;
-              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],more,bottom:window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-20});
+              const root=document.scrollingElement||document.documentElement;
+              const cards=document.querySelectorAll('a[href*="/product/"]');
+              const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible);
+              const pageState=cards.length+'|'+root.scrollHeight+'|'+(cards.length?cards[cards.length-1].href:'');
+              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],more,loading,pageState,bottom:root.scrollTop+root.clientHeight>=root.scrollHeight-20});
             })()
         """.trimIndent()
         private val advanceScript="""
