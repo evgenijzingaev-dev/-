@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private var delivery = 0L
     private var portions = 3
     private val updater by lazy { AppUpdater(this) }
+    private val nutritionCache by lazy { NutritionCache(this) }
     private var tab = 3
     private var days = 3
     private var promptDraft = ""
@@ -211,9 +212,26 @@ class MainActivity : Activity() {
             startActivityForResult(i,702)
         }catch(_:Exception){toast("Распознавание речи недоступно на устройстве")}
     }
+    private fun nutritionDialog(){
+        val report=basketNutrition(items,nutritionCache::get)
+        val rows=report.lines.joinToString("\n"){line->line.name+": "+(line.total?.label()?.let{if(line.estimated)"≈ "+it else it} ?: "нет данных")}
+        val mealText=currentPlan?.let{plan->
+            "\n\nМеню · на одну порцию:\n"+plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->
+                val reports=meals.map{it to recipeNutrition(it.recipe,items,nutritionCache::get)}
+                val total=NutritionReport(reports.flatMap{it.second.lines})
+                "День "+day+" · "+total.summary()+"\n"+reports.joinToString("\n"){(meal,r)->meal.recipe.name+": "+(if(r.missing>0)"неполные данные" else if(r.estimated>0)"≈ "+r.total.label() else r.total.label())}
+            }
+        }.orEmpty()
+        val urls=items.map{it.storeUrl}.filter{storeProductUrl(Uri.parse(it))}.distinct()
+        val pending=urls.filter{nutritionCache.get(it)==null}
+        val d=AlertDialog.Builder(this).setTitle("Калории и БЖУ").setMessage("На количество ингредиентов в списке, а не на купленные упаковки.\n"+report.summary()+"\n\n"+rows+mealText+"\n\n≈ — приблизительная оценка; приготовление и отходы не учтены.")
+            .setPositiveButton("Закрыть",null)
+        if(pending.isNotEmpty())d.setNeutralButton("Уточнить КБЖУ (${pending.size})"){_,_->startActivityForResult(Intent(this,NutritionActivity::class.java).putStringArrayListExtra("urls",ArrayList(pending)),705)}
+        d.show()
+    }
     private fun previewPlan(plan:MealPlan) {
         val proposed=plan.ingredients()
-        val menu=plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->"День $day\n"+meals.joinToString("\n"){"${it.kind}: ${it.recipe.name}"}}
+        val menu=plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->"День $day\n"+meals.joinToString("\n"){val n=recipeNutrition(it.recipe,emptyList()){null};"${it.kind}: ${it.recipe.name}\n"+(if(n.missing>0)"КБЖУ неполные" else "≈ "+n.total.label()+" / порция")}}
         val details="$menu\n\n${proposed.size} позиций · ${plan.portions} порц. · бюджет ${rub(plan.budget)}\nЦены не проверены. Это меню, а не подтверждённая корзина."
         val d=AlertDialog.Builder(this).setTitle("Предварительное меню").setMessage(details)
             .setNegativeButton("Назад",null).setPositiveButton(if(items.isEmpty())"Создать список" else "Заменить список"){_,_->
@@ -236,6 +254,7 @@ class MainActivity : Activity() {
         c.addView(label((if(s.complete) "Итого" else "Известный минимум")+": "+rub(s.totalKnown),20f,if(s.over) Color.rgb(175,46,32) else ink,true))
         c.addView(label(when { s.over -> "Превышение бюджета минимум на ${rub(s.totalKnown-budget)}"; !s.complete -> "Без цены/фасовки: ${s.unknown}. Бюджет пока не подтверждён."; else -> "Остаток бюджета: ${rub(budget-s.totalKnown)}" },14f,gray))
         c.addView(label("Доставка (введено вручную): ${rub(delivery)}",15f,gray))
+        if(items.isNotEmpty())c.addView(link("Калории и БЖУ  ›"){nutritionDialog()})
         val hasNeeds=items.any{it.need>0&&!it.checked}
         if(hasNeeds){
             val ready=buildTransfer(items,budget,delivery)
@@ -470,6 +489,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==705){if(resultCode==RESULT_OK)nutritionDialog();return}
         if(requestCode==704){render();return}
         if(requestCode==703){
             if(resultCode!=RESULT_OK)return
