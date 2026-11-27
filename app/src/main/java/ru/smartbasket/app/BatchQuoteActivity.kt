@@ -27,7 +27,10 @@ class BatchQuoteActivity:Activity(){
     private var index=0
     private var running=false
     private var generation=0
-    private var attempts=0
+    private var best:VisibleOffer?=null
+    private var stableSince=0L
+    private var lastState=""
+    private var pendingRead:Runnable?=null
     private var expected=""
     private var reading=false
     private fun dp(n:Int)=(n*resources.displayMetrics.density+.5f).toInt()
@@ -80,32 +83,48 @@ class BatchQuoteActivity:Activity(){
     private fun next(){
         generation++
         handler.removeCallbacksAndMessages(null)
-        reading=false
+        reading=false;pendingRead=null
         if(index>=needs.size){running=false;skip.isEnabled=false;review();return}
-        val n=needs[index];attempts=0;expected=storeCategory(n.name)
+        val n=needs[index];best=null;stableSince=0L;lastState="";expected=storeCategory(n.name)
         status.text="Подбор "+(index+1)+"/"+needs.size+" · "+n.name+" · нужно "+n.amount+" "+n.unit
         skip.isEnabled=true
         val g=generation
         web.loadUrl(expected)
-        handler.postDelayed({if(running&&generation==g)complete(null)},18000)
+        handler.postDelayed({if(running&&generation==g)complete(best)},120000)
         queueRead(g,4000)
     }
     private fun queueRead(g:Int,delay:Long){
-        handler.postDelayed({if(running&&generation==g)read(g)},delay)
+        pendingRead?.let{handler.removeCallbacks(it)}
+        val task=Runnable{pendingRead=null;if(running&&generation==g)read(g)}
+        pendingRead=task;handler.postDelayed(task,delay)
     }
     private fun read(g:Int){
         if(reading||!running||generation!=g)return
         if(!sameCategory(web.url.orEmpty(),expected)){queueRead(g,2500);return}
-        reading=true;attempts++
+        reading=true
         val n=needs[index]
         web.evaluateJavascript(catalogScript){raw->
             if(!running||generation!=g||isFinishing||isDestroyed)return@evaluateJavascript
             reading=false
             if(!sameCategory(web.url.orEmpty(),expected)){queueRead(g,2500);return@evaluateJavascript}
             val match=visibleOffers(raw,n.name,n.unit,n.amount).firstOrNull()
-            if(match!=null){complete(match)}
-            else if(attempts<3){queueRead(g,2200)}
-            else complete(null)
+            val old=best
+            if(match!=null&&(old==null||(!match.offer.conditional&&old.offer.conditional)||(match.offer.conditional==old.offer.conditional&&match.offer.total(n.amount)<old.offer.total(n.amount))))best=match
+            reading=true
+            web.evaluateJavascript(pageProgressScript){stateRaw->
+                if(!running||generation!=g||isFinishing||isDestroyed)return@evaluateJavascript
+                reading=false
+                val state=try{JSONObject(org.json.JSONTokener(stateRaw).nextValue() as String)}catch(_:Exception){null}
+                if(state==null||!sameCategory(web.url.orEmpty(),expected)){queueRead(g,3000);return@evaluateJavascript}
+                val signature=state.optString("signature")
+                val now=android.os.SystemClock.elapsedRealtime()
+                if(signature!=lastState||state.optBoolean("loading")||!state.optBoolean("bottom")||state.optBoolean("more")){
+                    lastState=signature;stableSince=now
+                }else if(stableSince==0L)stableSince=now
+                if(state.optBoolean("bottom")&&!state.optBoolean("more")&&!state.optBoolean("loading")&&now-stableSince>=10000L){complete(best);return@evaluateJavascript}
+                status.text="Подбор "+(index+1)+"/"+needs.size+" · "+n.name+" · просмотр следующих товаров"
+                queueRead(g,2500)
+            }
         }
     }
     private fun complete(v:VisibleOffer?){
@@ -134,5 +153,21 @@ class BatchQuoteActivity:Activity(){
         }
         d.show()
     }
+    private val pageProgressScript="""
+        (function(){
+          if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!location.pathname.startsWith('/catalog/'))return '{}';
+          const root=document.scrollingElement||document.documentElement;
+          const cards=[...document.querySelectorAll('a[href*="/product/"]')];
+          const more=[...document.querySelectorAll('button,[role="button"]')].filter(b=>b.getClientRects().length>0&&!b.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((b.innerText||'').trim()));
+          const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(x=>x.getClientRects().length>0);
+          const bottom=root.scrollTop+root.clientHeight>=root.scrollHeight-20;
+          const signature=cards.length+'|'+root.scrollHeight+'|'+(cards.at(-1)?.href||'');
+          if(!loading){
+            if(more.length===1)more[0].click();
+            else if(!bottom)window.scrollBy(0,Math.max(300,window.innerHeight*0.8));
+          }
+          return JSON.stringify({signature,bottom,more:more.length>0,loading});
+        })()
+    """.trimIndent()
     override fun onDestroy(){running=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
 }
