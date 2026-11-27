@@ -52,8 +52,13 @@ class MainActivity : Activity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density + .5f).toInt()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        promptDraft = savedInstanceState?.getString("assistant_prompt").orEmpty()
         load(); assistantHistory.addAll(memory.history()); render(); acceptIntent(intent)
         updater.check(false)
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("assistant_prompt", promptDraft.take(4000))
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); acceptIntent(intent) }
     private fun acceptIntent(i: Intent?) {
@@ -218,7 +223,7 @@ class MainActivity : Activity() {
         val history=assistantHistory.toList()
         val preferences=memory.preferences();val targetDays=days;val people=portions;val target=calorieTarget
         val previous=items.toList();val limit=budget;val shipping=delivery
-        assistantBusy=true;promptDraft="";render()
+        assistantBusy=true;render()
         Thread{
             try{
                 val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target)
@@ -227,6 +232,7 @@ class MainActivity : Activity() {
                     if(!isFinishing&&!isDestroyed){
                         rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text))
                         if(answer.dishes.isNotEmpty())draftDishes=answer.dishes
+                        if (promptDraft.trim() == prompt) promptDraft = ""
                         assistantBusy=false;render()
                         val showBasket={answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)};Unit}
                         if(answer.preferenceProposal!=null&&answer.preferenceProposal!=preferences){
@@ -239,8 +245,18 @@ class MainActivity : Activity() {
                         }else showBasket()
                     }
                 }
-            }catch(_:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
-                assistantBusy=false;if(promptDraft.isBlank())promptDraft=prompt;render();toast("Не удалось получить ответ ChatGPT. Проверь подключение и лимиты.")
+            }catch(e:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
+                assistantBusy=false
+                render()
+                AlertDialog.Builder(this).setTitle("Ответ ChatGPT не получен")
+                    .setMessage(chatGptFailureMessage(e) ?: "Проверь подключение и лимиты ChatGPT.")
+                    .setNegativeButton("Закрыть", null)
+                    .apply {
+                        if (promptDraft.trim() == prompt && connection.connected() &&
+                            generateSequence<Throwable>(e) { it.cause }.any { it is java.net.UnknownHostException }) {
+                            setPositiveButton("Повторить") { _, _ -> askAssistant() }
+                        }
+                    }.show()
             }}}
         }.start()
     }

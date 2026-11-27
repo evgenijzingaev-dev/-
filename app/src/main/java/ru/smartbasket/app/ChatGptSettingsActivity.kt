@@ -37,7 +37,7 @@ class ChatGptSettingsActivity:Activity(){
         if(busy)return
         busy=true;refresh();status.text=message
         Thread{
-            val result=try{task()}catch(e:Exception){if(e is IllegalStateException||e is IllegalArgumentException)e.message?.takeIf{it.length<180&&!it.contains("http://")&&!it.contains("https://")}?:"Ошибка подключения" else "Не удалось подключиться: "+e.javaClass.simpleName}
+            val result=try{task()}catch(e:Exception){chatGptFailureMessage(e) ?: if(e is IllegalStateException||e is IllegalArgumentException)e.message?.takeIf{it.length<180&&!it.contains("http://")&&!it.contains("https://")}?:"Ошибка подключения" else "Не удалось подключиться: "+e.javaClass.simpleName}
             runOnUiThread{if(alive()){busy=false;refresh();status.text=result}}
         }.start()
     }

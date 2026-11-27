@@ -28,6 +28,21 @@ import javax.net.ssl.HttpsURLConnection
 
 /** Local personal-project integration using the documented Sign in with ChatGPT flow. */
 private class OpenAiHttpException(val status:Int,val oauthCode:String=""):IllegalStateException("OpenAI HTTP "+status)
+
+private class ChatGptAuthorizationException(message: String) : IllegalStateException(message)
+
+internal fun chatGptFailureMessage(error: Exception): String? =
+    when {
+        generateSequence<Throwable>(error) { it.cause }.any { it is java.net.UnknownHostException } ->
+            "Не удалось найти сервер ChatGPT (DNS). Проверь подключение к интернету и настройки DNS, затем повтори действие."
+        error is ChatGptAuthorizationException -> error.message
+        error is OpenAiHttpException && error.status == 401 ->
+            "ChatGPT не принял данные входа. Подключи аккаунт снова."
+        error is OpenAiHttpException && error.status == 403 ->
+            "ChatGPT отказал в доступе. Проверь разрешения аккаунта."
+        else -> null
+    }
+
 class ChatGptConnection(context:Context){
     companion object{private val sessionLock=Any()}
     private val prefs=context.applicationContext.getSharedPreferences("chatgpt_connection",Context.MODE_PRIVATE)
@@ -169,7 +184,7 @@ class ChatGptConnection(context:Context){
                 }
             }
             val cb=callback?:error("Время входа истекло")
-            require(cb.getQueryParameter("error")==null){"Вход не разрешён"}
+            if (cb.getQueryParameter("error") != null) throw ChatGptAuthorizationException("Вход в ChatGPT не разрешён.")
             val issued=cb.getQueryParameter("client_id")?:existing?:error("OpenAI не вернул client_id")
             require(issued.startsWith("oaiapp_")&&issued.length<=256&&(existing==null||existing==issued)){"Некорректная регистрация OpenAI"}
             val code=cb.getQueryParameters("code").singleOrNull()?.takeIf{it.isNotBlank()}?:error("Не получен код входа")
@@ -202,7 +217,7 @@ class ChatGptConnection(context:Context){
         }catch(e:OpenAiHttpException){
             if(e.oauthCode in listOf("invalid_grant","invalid_client","invalid_scope","unauthorized_client")){
                 prefs.edit().remove("session").commit()
-                error("Разрешение ChatGPT истекло или отозвано. Войди снова.")
+                throw ChatGptAuthorizationException("Разрешение ChatGPT истекло или отозвано. Войди снова.")
             }
             throw e
         }
