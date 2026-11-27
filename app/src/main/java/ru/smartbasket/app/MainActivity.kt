@@ -359,7 +359,7 @@ class MainActivity : Activity() {
             val hs=h.text.toString();val ws=w.text.toString()
             val height=hs.toIntOrNull();val weight=ws.replace(',','.').toDoubleOrNull()
             if(years==null || (hs.isNotBlank()&&height==null) || (ws.isNotBlank()&&weight==null)){toast("Проверь числовые поля");return@setOnClickListener}
-            val member=FamilyMember(n.text.toString().trim(),years,height,weight,a.text.toString(),if(years<18)"" else g.text.toString(),t.text.toString(),r.text.toString())
+            val member=FamilyMember(n.text.toString().trim(),years,height,weight,a.text.toString(),if(years<18)"" else g.text.toString(),t.text.toString(),r.text.toString(),m?.id?:java.util.UUID.randomUUID().toString())
             if(!member.valid()){toast("Проверь данные профиля");return@setOnClickListener}
             val updated=members.toMutableList();if(index==null)updated.add(member)else updated[index]=member
             family.save(updated);dlg.dismiss();render();familyDialog()
