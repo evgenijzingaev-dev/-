@@ -29,6 +29,9 @@ class CatalogSyncActivity:Activity(){
     private var generation=0
     private var store=""
     private var current=""
+    private val rootSections=linkedMapOf<String,String>()
+    private val rootPath="/catalog/"
+    private fun atRoot()=Uri.parse(current).path.orEmpty().trimEnd('/')==rootPath.trimEnd('/')
     private var rounds=0
     private var stable=0
     private var done=0
@@ -128,7 +131,7 @@ class CatalogSyncActivity:Activity(){
             if(!code.matches(Regex("[A-Za-z0-9_-]{1,40}"))){
                 start.isEnabled=true;apiButton.isEnabled=true;status.text="Не определён магазин доставки. Выбери адрес на сайте, затем повтори.";return@evaluateJavascript
             }
-            store=code;queue.clear();seen.clear();products.clear();done=0;failed=0;active=true;stop.isEnabled=true
+            store=code;queue.clear();seen.clear();rootSections.clear();products.clear();done=0;failed=0;active=true;stop.isEnabled=true
             enqueue("https://5ka.ru/catalog/");next()
         }
     }
@@ -144,13 +147,18 @@ class CatalogSyncActivity:Activity(){
         val canonical="https://5ka.ru"+path
         if(!seen.contains(canonical)){if(seen.size>=400){failed++;return};seen.add(canonical);queue.add(canonical)}
     }
+    private fun enqueueRootSections(){
+        // Only links discovered on the official root page; never follow nested collections.
+        if(rootSections.size<primarySections.values.toSet().size)failed++
+        rootSections.values.forEach(::enqueue)
+    }
     private fun next(){
         generation++;handler.removeCallbacksAndMessages(null);reading=false
         if(queue.isEmpty()){finishSync("Доступные категории обработаны",true);return}
         current=queue.removeFirst();rounds=0;stable=0;pageProducts.clear()
         status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
         val g=generation;web.loadUrl(current)
-        handler.postDelayed({if(active&&generation==g){failed++;done++;next()}},180000)
+        handler.postDelayed({if(active&&generation==g){failed++;if(atRoot())enqueueRootSections() else done++;next()}},360000)
         schedule(g,5000)
     }
     private fun schedule(g:Int,ms:Long){handler.postDelayed({if(active&&generation==g)read(g)},ms)}
@@ -163,9 +171,19 @@ class CatalogSyncActivity:Activity(){
             val j=decode(raw);reading=false
             if(j==null||j.optString("store")!=store){finishSync("Не удалось подтвердить тот же магазин доставки. Выгрузка остановлена.",false);return@evaluateJavascript}
             val links=j.optJSONArray("categories")
-            if(links!=null)for(i in 0 until links.length())enqueue(links.optString(i))
-            val list=j.optJSONArray("products")
             var added=0
+            if(atRoot()&&links!=null)for(i in 0 until links.length()){
+                val link=links.optJSONObject(i)?:continue
+                val title=normalized(link.optString("title"))
+                val url=link.optString("url")
+                if(!catalogPage(url)||!Regex("^/catalog/[A-Za-z0-9_-]+--[A-Za-z0-9_-]+/?$").matches(Uri.parse(url).path.orEmpty()))continue
+                val group=primarySections[title]?:continue
+                val old=rootSections[group]
+                if(old==null){rootSections[group]=url;added++}
+                // Prefer the full top-level section, not the nested "all ready meals" subset.
+                else if(group=="готовая еда"&&title=="готовая еда")rootSections[group]=url
+            }
+            val list=if(atRoot())null else j.optJSONArray("products")
             if(list!=null)for(i in 0 until list.length()){
                 val o=list.optJSONObject(i)?:continue
                 val url=o.optString("url");val text=o.optString("text").take(1200)
@@ -178,11 +196,21 @@ class CatalogSyncActivity:Activity(){
             }
             rounds++;stable=if(added==0)stable+1 else 0
             status.text="Категорий обработано: "+done+" · найдено товаров: "+products.size+" · страниц в очереди: "+queue.size
-            if(products.size>=30000||rounds>=50){failed++;done++;if(products.size>=30000)finishSync("Достигнут лимит выгрузки",false)else next();return@evaluateJavascript}
+            if(products.size>=30000||rounds>=150){
+                failed++
+                if(atRoot())enqueueRootSections() else done++
+                if(products.size>=30000)finishSync("Достигнут лимит выгрузки",false)else next()
+                return@evaluateJavascript
+            }
             // Also scroll the root catalog: categories can load below banners.
             if(stable>=3&&j.optBoolean("bottom")&&!j.optBoolean("more")){
-                if(pageProducts.isEmpty()&&(links==null||links.length()==0))failed++
-                done++;next();return@evaluateJavascript
+                if(atRoot()){
+                    enqueueRootSections()
+                }else{
+                    if(pageProducts.isEmpty())failed++
+                    done++
+                }
+                next();return@evaluateJavascript
             }
             reading=true
             web.evaluateJavascript(advanceScript){_ ->
@@ -207,17 +235,35 @@ class CatalogSyncActivity:Activity(){
     }
     override fun onDestroy(){apiCancelled=true;active=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
     companion object {
+        // Official catalog's broad groups. Names are resolved to live links, not fixed IDs.
+        private val primarySections=mapOf(
+            "готовая еда" to "готовая еда","вся готовая еда" to "готовая еда",
+            "овощи, фрукты, орехи" to "овощи",
+            "молочные продукты, яйца" to "молочные","молочная продукция и яйцо" to "молочные",
+            "хлеб и выпечка" to "хлеб","мясо, птица, колбасы" to "мясо",
+            "рыба и морепродукты" to "рыба","сладости" to "сладости",
+            "снеки и чипсы" to "снеки","бакалея" to "бакалея",
+            "замороженные продукты" to "заморозка","вода и напитки" to "напитки",
+            "здоровый выбор" to "здоровый выбор",
+            "бытовая химия, уборка" to "уборка","стирка и уборка" to "уборка",
+            "красота, гигиена, аптека" to "гигиена",
+            "детские товары" to "детские","для детей" to "детские",
+            "для животных" to "животные","кухня, дом, дача" to "дом","для дома и дачи" to "дом"
+        )
         private val storeScript="""(function(){try{if(!['5ka.ru','www.5ka.ru'].includes(location.hostname))return '';const x=JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}');return String(x.selectedStore?.sapCode||'');}catch(e){return '';}})()"""
         private val scanScript="""
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!location.pathname.startsWith('/catalog/'))return '{}';
               let store='';try{store=String(JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}').selectedStore?.sapCode||'');}catch(e){}
-              const categories=new Set(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
+              const categories=new Map(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
               for(const a of document.querySelectorAll('a[href]')){
                 if(!visible(a))continue;
                 const u=new URL(a.href,location.href);
                 if(u.origin!==location.origin)continue;
-                if(u.pathname.startsWith('/catalog/')&&u.pathname!='/catalog/'&&!u.search)categories.add(u.origin+u.pathname);
+                if(location.pathname.replace(/\/$/,'')==='/catalog'&&u.pathname.startsWith('/catalog/')&&u.pathname!='/catalog/'&&!u.search){
+                  const title=(a.innerText||a.getAttribute('aria-label')||'').trim();
+                  if(title)categories.set(u.pathname+'|'+title,{url:u.origin+u.pathname,title});
+                }
                 if(!u.pathname.startsWith('/product/'))continue;
                 let t=(a.innerText||'').trim();
                 if(!t.includes('₽')){
@@ -232,7 +278,7 @@ class CatalogSyncActivity:Activity(){
                 if(t.length>0&&t.length<=1200)products.set(u.pathname,{url:u.origin+u.pathname,text:t});
               }
               const more=[...document.querySelectorAll('button,[role="button"]')].filter(b=>visible(b)&&!b.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((b.innerText||'').trim())).length===1;
-              return JSON.stringify({store,categories:[...categories],products:[...products.values()],more,bottom:window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-20});
+              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],more,bottom:window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-20});
             })()
         """.trimIndent()
         private val advanceScript="""
