@@ -15,4 +15,4 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
 }
 
-dependencies { implementation("androidx.health.connect:connect-client:1.1.0-alpha11"); implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") }
+dependencies { implementation("androidx.activity:activity-ktx:1.8.2"); implementation("androidx.health.connect:connect-client:1.1.0-alpha11"); implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") }
