@@ -1,6 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
     <application android:usesCleartextTraffic="false" android:allowBackup="false" android:label="Умная корзина" android:theme="@style/AppTheme" android:supportsRtl="true" android:icon="@drawable/ic_basket">
+        <activity android:name=".CatalogSyncActivity" android:exported="false"/>
         <activity android:name=".CartTransferActivity" android:exported="false"/>
         <activity android:name=".BatchQuoteActivity" android:exported="false"/>
         <activity android:name=".StoreActivity" android:exported="false"/>

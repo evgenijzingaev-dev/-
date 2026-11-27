@@ -172,7 +172,10 @@ class MainActivity : Activity() {
         c.addView(label("Доставка (введено вручную): ${rub(delivery)}",13f,gray))
         if(items.any { it.need>0 && !it.checked }) {
             if(items.any { it.need>0 && !it.checked && it.storeUrl.isNotBlank() }) addButton(c,"Перенести товары в Пятёрочку",true){prepareTransfer()}
-            addButton(c,"Автоматически подобрать товары",true){batchQuote()}
+            c.addView(label(catalogLabel(),13f,gray))
+            addButton(c,"Подобрать из загруженного каталога",true){chooseFromCatalog()}
+            addButton(c,"Обновить весь каталог"){syncCatalog()}
+            addButton(c,"Поиск по отдельным категориям"){batchQuote()}
             addButton(c,"Открывать товары по очереди"){startGuided()}
         }
         addButton(c,"Бюджет и доставка") { budgetDialog() }
@@ -205,7 +208,54 @@ class MainActivity : Activity() {
         for(r in recipes){ val c=card(body); c.addView(label(r.name,19f,ink,true)); c.addView(label(r.ingredients.joinToString(" · "){"${it.name} ${(it.amount*portions+r.servings-1)/r.servings} ${it.unit}"},14f,gray)); c.addView(label(r.method,14f,ink)); addButton(c,"Добавить на $portions порц.",true){ try { items=merge(items,r.ingredients,portions,r.servings); save(); toast("Рецепт добавлен") }catch(e:Exception){toast(e.message?:"Ошибка количества")} } }
         addButton(body,"Перейти в корзину") { tab=0;render() }
     }
+    private fun catalogLabel():String {
+        val s=LocalCatalog(this).read()?:return "Каталог ещё не загружен"
+        val date=java.text.DateFormat.getDateTimeInstance().format(java.util.Date(s.updated))
+        return "Магазин "+s.store+" · "+s.entries.size+" товаров · "+date+" · полнота не подтверждена"
+    }
+    private fun syncCatalog(){startActivityForResult(Intent(this,CatalogSyncActivity::class.java),704)}
+    private fun chooseFromCatalog(){
+        val snapshot=LocalCatalog(this).read()
+        if(snapshot==null){syncCatalog();return}
+        if(System.currentTimeMillis()-snapshot.updated>6*60*60*1000L){toast("Каталог устарел. Обнови цены.");syncCatalog();return}
+        AlertDialog.Builder(this).setTitle("Использовать загруженный каталог?")
+            .setMessage(catalogLabel()+"\nПодтверди, что адрес доставки и магазин не менялись. Цены предварительные.")
+            .setNegativeButton("Обновить"){_,_->syncCatalog()}
+            .setPositiveButton("Подобрать"){_,_->
+                var found=0
+                items=items.map{i->
+                    if(i.need<=0||i.checked)i else {
+                        val m=findCatalogMatch(snapshot.entries,i)
+                        if(m==null)i.copy(price=null,storeName="",storeUrl="")
+                        else{found++;i.copy(pack=m.offer.pack,price=m.offer.price,storeName=m.offer.description,storeUrl=m.entry.url)}
+                    }
+                }
+                tab=0;update();toast("Из каталога подобрано "+found+" позиций")
+            }.show()
+    }
+    private fun catalogBrowser(){
+        val snapshot=LocalCatalog(this).read()?:run{syncCatalog();return}
+        val wrap=vertical().apply{setPadding(dp(12),dp(6),dp(12),dp(6))}
+        val input=field(hint="Поиск по всему каталогу")
+        val result=label("",14f,ink)
+        wrap.addView(label(catalogLabel(),13f,gray));wrap.addView(input)
+        val sc=ScrollView(this);sc.addView(result);wrap.addView(sc,LinearLayout.LayoutParams(-1,dp(360)))
+        fun show(q:String){
+            val matches=snapshot.entries.filter{normalized(it.text).contains(normalized(q))}
+            result.text="Найдено: "+matches.size+"\n\n"+matches.take(100).joinToString("\n\n"){it.text}
+        }
+        input.addTextChangedListener(object:android.text.TextWatcher{
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){show(s?.toString().orEmpty())}
+            override fun afterTextChanged(s:android.text.Editable?){}
+        })
+        show("")
+        AlertDialog.Builder(this).setTitle("Каталог магазина").setView(wrap).setPositiveButton("Закрыть",null).show()
+    }
     private fun storeScreen() {
+        val catalog=card(body);catalog.addView(label("Каталог и цены",22f,green,true));catalog.addView(label(catalogLabel(),14f,gray))
+        addButton(catalog,"Загрузить / обновить весь каталог",true){syncCatalog()}
+        addButton(catalog,"Поиск в загруженных товарах"){catalogBrowser()}
         val c=card(body); c.addView(label("Пятёрочка",23f,green,true)); c.addView(label("Встроенный браузер открывает официальный сайт. Войди через X5ID, выбери адрес доставки. Сессия хранится в WebView на телефоне.",16f)); addButton(c,"Открыть магазин в приложении",true){openStore()}; addButton(c,"Скопировать список покупок"){copy(listText())}; c.addView(label("Для конкретного ингредиента нажми «В магазин», выбери товар и перенеси цену и фасовку. Добавление и проверка корзины выполняются на сайте. Режим экспериментальный.",14f,gray))
         val help=card(body); help.addView(label("Передача из ChatGPT",19f,ink,true)); help.addView(label("Поделись обычным списком ингредиентов из ChatGPT или вставь его на главной. Например: Молоко — 500 мл.",15f)); addButton(help,"Скопировать шаблон запроса"){copy("Составь список ингредиентов с количеством в граммах, миллилитрах или штуках, по одному продукту на строку.")}
     }
@@ -287,6 +337,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==704){render();return}
         if(requestCode==703){
             if(resultCode!=RESULT_OK)return
             try{
