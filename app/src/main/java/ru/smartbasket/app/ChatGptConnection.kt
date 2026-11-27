@@ -24,7 +24,10 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import javax.net.ssl.HttpsURLConnection
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /** Local personal-project integration using the documented Sign in with ChatGPT flow. */
 private class OpenAiHttpException(val status:Int,val oauthCode:String=""):IllegalStateException("OpenAI HTTP "+status)
@@ -95,7 +98,7 @@ class ChatGptConnection(context:Context){
                 for(attempt in 0..1){
                     try{
                         val connection=request(endpoint,form(mapOf("token" to refresh,"token_type_hint" to "refresh_token","client_id" to client)),"application/x-www-form-urlencoded",revocationEndpoint=endpoint)
-                        try{revoked=connection.responseCode==200}finally{connection.disconnect()}
+                        try{revoked=connection.code==200}finally{connection.close()}
                         break
                     }catch(e:Exception){if(attempt==0&&(e is java.io.IOException||e is OpenAiHttpException&&e.status>=500))Thread.sleep(500)else break}
                 }
@@ -103,39 +106,46 @@ class ChatGptConnection(context:Context){
         }catch(_:Exception){}finally{prefs.edit().remove("session").commit()}
         revoked
     }
-    private fun request(url:String,body:String?=null,contentType:String="application/json",token:String?=null,revocationEndpoint:String?=null):HttpsURLConnection{
+    fun encryptedDnsEnabled()=prefs.getBoolean("encrypted_dns",false)
+    fun setEncryptedDnsEnabled(value:Boolean){prefs.edit().putBoolean("encrypted_dns",value).apply()}
+    private fun request(url:String,body:String?=null,contentType:String="application/json",token:String?=null,revocationEndpoint:String?=null):Response{
         require(url in setOf(auth+"/api/accounts/oauth/token",auth+"/.well-known/jwks.json",auth+"/.well-known/openid-configuration",api+"/models",api+"/responses")||revocationEndpoint!=null&&url==revocationEndpoint)
-        val c=URL(url).openConnection() as HttpsURLConnection
-        c.instanceFollowRedirects=false;c.connectTimeout=15000;c.readTimeout=90000
-        c.setRequestProperty("Accept",if(url.endsWith("/responses"))"text/event-stream" else "application/json")
-        if(token!=null)c.setRequestProperty("Authorization","Bearer "+token)
-        try {
-        if(body!=null){
-            c.requestMethod="POST";c.doOutput=true;c.setRequestProperty("Content-Type",contentType)
-            c.outputStream.use{it.write(body.toByteArray(Charsets.UTF_8))}
+        val builder=Request.Builder().url(url)
+            .header("Accept",if(url.endsWith("/responses"))"text/event-stream" else "application/json")
+        if(token!=null)builder.header("Authorization","Bearer "+token)
+        if(body!=null)builder.post(body.toRequestBody(contentType.toMediaType()))
+        val response=try{OpenAiNetwork.client(encryptedDnsEnabled()).newCall(builder.build()).execute()}
+            catch(e:java.net.UnknownHostException){throw ChatGptDnsException(URL(url).host,e)}
+        if(!response.isSuccessful){
+            val code=response.code
+            val oauthCode=try{
+                if(url==auth+"/api/accounts/oauth/token"){
+                    val reader=response.body?.charStream()
+                    reader?.use{r->val buf=CharArray(4096);val count=r.read(buf);if(count>0)JSONObject(String(buf,0,count)).optString("error")else ""}.orEmpty()
+                }else ""
+            }catch(_:Exception){""}finally{response.close()}
+            throw OpenAiHttpException(code,oauthCode)
         }
-        val code=c.responseCode
-        if(code !in 200..299){
-            val oauthCode=if(url==auth+"/api/accounts/oauth/token")try{
-                val reader=c.errorStream?.bufferedReader()
-                reader?.use{r->val buf=CharArray(4096);val count=r.read(buf);if(count>0)JSONObject(String(buf,0,count)).optString("error")else ""}.orEmpty()
-            }catch(_:Exception){""}else ""
-            c.disconnect();throw OpenAiHttpException(code,oauthCode)
-        }
-        return c
-        }catch(e:java.net.UnknownHostException){c.disconnect();throw ChatGptDnsException(URL(url).host,e)}
-         catch(e:Exception){c.disconnect();throw e}
+        return response
+    }
+    /** Unauthenticated HTTPS check; no profile, token, or basket is transmitted. */
+    fun checkNetwork():String{
+        val config=json(auth+"/.well-known/openid-configuration")
+        require(config.optString("issuer")==auth && config.optString("token_endpoint")==auth+"/api/accounts/oauth/token"){"Неожиданные параметры сервера входа"}
+        try{request(api+"/models").close()}
+        catch(e:OpenAiHttpException){if(e.status!=401)throw e}
+        return "Сервер входа и API доступны. Можно подключать ChatGPT."
     }
     private fun json(url:String,body:String?=null,contentType:String="application/json",token:String?=null):JSONObject{
         val c=request(url,body,contentType,token)
         try{
-            val s=c.inputStream.bufferedReader().use{r->
+            val s=(c.body?:error("Пустой HTTP ответ")).charStream().use{r->
                 val out=StringBuilder();val buf=CharArray(4096)
                 while(true){val n=r.read(buf);if(n<0)break;out.append(buf,0,n);require(out.length<=2_000_000)}
                 out.toString()
             }
             return JSONObject(s)
-        }finally{c.disconnect()}
+        }finally{c.close()}
     }
     private fun verifyIdentity(id:String,client:String,nonce:String):JSONObject{
         val p=id.split('.');require(p.size==3&&id.length<64000){"Некорректный ID token"}
@@ -159,6 +169,7 @@ class ChatGptConnection(context:Context){
     }
     /** Blocking; invoke on worker thread. Browser callback is restricted to IPv4 loopback. */
     fun signIn(openBrowser: (String) -> Unit): Unit = synchronized(sessionLock) {
+        checkNetwork()
         val host = prefs.getString("host", null) ?: ("urn:uuid:" + UUID.randomUUID()).also {
             require(prefs.edit().putString("host", it).commit()) { "Не удалось сохранить идентификатор подключения" }
         }
@@ -264,7 +275,7 @@ class ChatGptConnection(context:Context){
         val c=request(api+"/responses",body.toString(),token=token)
         val out=StringBuilder();var completed=false
         try{
-            c.inputStream.bufferedReader().useLines{lines->
+            (c.body?:error("Пустой HTTP ответ")).charStream().useLines{lines->
                 for(line in lines){
                     if(!line.startsWith("data:"))continue
                     val data=line.removePrefix("data:").trim()
@@ -277,7 +288,7 @@ class ChatGptConnection(context:Context){
                     }
                 }
             }
-        }finally{c.disconnect()}
+        }finally{c.close()}
         require(completed&&out.isNotBlank()){"Ответ ChatGPT не завершён"}
         return out.toString()
     }
@@ -289,7 +300,7 @@ class ChatGptConnection(context:Context){
             .put("include",JSONArray().put("reasoning.encrypted_content"))
         val c=request(api+"/responses",body.toString(),token=access())
         try{
-            c.inputStream.bufferedReader().useLines{lines->
+            (c.body?:error("Пустой HTTP ответ")).charStream().useLines{lines->
                 for(line in lines){
                     if(Thread.currentThread().isInterrupted)error("Запрос отменён")
                     if(!line.startsWith("data:"))continue
@@ -303,7 +314,7 @@ class ChatGptConnection(context:Context){
                     }
                 }
             }
-        }finally{c.disconnect()}
+        }finally{c.close()}
         error("Поток ChatGPT прервался")
     }
 }

@@ -3,7 +3,7 @@ android {
     namespace = "ru.smartbasket.app"
     compileSdk = 34
     defaultConfig.testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    defaultConfig { applicationId = "ru.smartbasket.app"; minSdk = 26; targetSdk = 34; versionCode = 23; versionName = "0.12.0" }
+    defaultConfig { applicationId = "ru.smartbasket.app"; minSdk = 26; targetSdk = 34; versionCode = 24; versionName = "0.12.1" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
@@ -16,3 +16,5 @@ dependencies {
 }
 
 dependencies { implementation("androidx.activity:activity-ktx:1.8.2"); implementation("androidx.health.connect:connect-client:1.1.0-alpha07"); implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") }
+
+dependencies { implementation("com.squareup.okhttp3:okhttp:4.12.0"); implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0") }
