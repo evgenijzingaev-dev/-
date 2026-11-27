@@ -9,19 +9,19 @@ data class StoreOffer(val description:String,val pack:Long,val price:Long,val co
 fun parseStoreOffer(raw:String,unit:String):StoreOffer? {
     val t=raw.replace(Regex("[\\s\\u00a0\\u202f]+")," ").trim()
     if(t.length !in 3..1200 || unit !in listOf("г","мл","шт")) return null
-    if(Regex("(?i)(?:за|/|₽/)\\s*(?:1\\s*)?(?:кг|л|100\\s*г)(?:\\b|$)").containsMatchIn(t)) return null
-    val priceRe=Regex("(?i)(старая\\s+)?цена\\s+([0-9][0-9 ]*?)(?:[.,]| )([0-9]{2})\\s*₽")
+    if(Regex("(?iu)(?:за|/|₽/)\\s*(?:1\\s*)?(?:кг|л|100\\s*г)(?:\\b|$)").containsMatchIn(t)) return null
+    val priceRe=Regex("(?iu)(старая\\s+)?цена\\s+([0-9][0-9 ]*?)(?:[.,]| )([0-9]{2})\\s*₽")
     val matches=priceRe.findAll(t).toList()
     val current=matches.filter{it.groupValues[1].isEmpty()}.singleOrNull()?:return null
     val price=money(current.groupValues[2].replace(" ","")+"."+current.groupValues[3])?:return null
     val before=t.substring(0,matches.first().range.first).trim()
-    val q=Regex("(?i)([0-9]+(?:[.,][0-9]+)?)\\s*(кг|мл|г|л|шт)\\s*$").find(before)?:return null
+    val q=Regex("(?iu)([0-9]+(?:[.,][0-9]+)?)\\s*(кг|мл|г|л|шт)\\s*$").find(before)?:return null
     val value=q.groupValues[1].replace(',','.').toBigDecimalOrNull()?:return null
     val u=q.groupValues[2].lowercase()
     if((when(u){"кг"->"г";"л"->"мл";else->u})!=unit)return null
     val pack=try{(if(u=="кг"||u=="л")value.multiply(java.math.BigDecimal(1000))else value).longValueExact()}catch(_:Exception){return null}
     if(pack !in 1..10_000_000)return null
-    val conditional=Regex("(?i)(от\\s*\\d+\\s*шт|\\d+\\s*\\+\\s*\\d+|по карте|с картой|комбо)").containsMatchIn(t)
+    val conditional=Regex("(?iu)(от\\s*\\d+\\s*шт|\\d+\\s*\\+\\s*\\d+|по карте|с картой|комбо)").containsMatchIn(t)
     return StoreOffer(before.take(220),pack,price,conditional)
 }
 fun offerMatches(name:String,description:String):Boolean {
