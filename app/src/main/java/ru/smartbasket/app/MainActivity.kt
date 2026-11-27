@@ -210,15 +210,32 @@ class MainActivity : Activity() {
                 val answer=engine.ask(history,prompt)
                 runOnUiThread{
                     if(!isFinishing&&!isDestroyed){
-                        assistantHistory.add(AssistantMessage("user",prompt));assistantHistory.add(AssistantMessage("assistant",answer))
+                        assistantHistory.add(AssistantMessage("user",prompt));assistantHistory.add(AssistantMessage("assistant",answer.text))
                         while(assistantHistory.size>12)assistantHistory.removeAt(0)
                         assistantBusy=false;render()
+                        answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)}
                     }
                 }
             }catch(_:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
                 assistantBusy=false;if(promptDraft.isBlank())promptDraft=prompt;render();toast("Не удалось получить ответ ChatGPT. Проверь подключение и лимиты.")
             }}}
         }.start()
+    }
+    private fun showAssistantProposal(proposal:BasketProposal,previous:List<BasketItem>,limit:Long,shipping:Long){
+        if(items!=previous||budget!=limit||delivery!=shipping){toast("Корзина или бюджет изменились. Повтори запрос.");return}
+        val proposed=proposal.items
+        val s=summarize(proposed,limit,shipping)
+        val summary=if(s.complete)"Итого с доставкой: "+rub(s.totalKnown) else "Известный минимум с доставкой: "+rub(s.totalKnown)+" · без цены: "+s.unknown
+        val rows=proposed.joinToString("\n"){it.name+" — "+it.amount+" "+it.unit+" · "+(it.cost?.let{c->rub(c)}?:"цена неизвестна")}
+        val warning=if(s.over)"\nПревышен текущий бюджет." else if(!s.complete)"\nБюджет не подтверждён." else ""
+        AlertDialog.Builder(this).setTitle("Предложение ChatGPT")
+            .setMessage(summary+warning+"\nБюджет: "+rub(limit)+"\nЦены предварительные.\n\n"+rows+"\n\nЗаменить текущий список? Заказ не оформляется.")
+            .setNegativeButton("Отклонить"){_,_->assistantHistory.add(AssistantMessage("assistant","Приложение: пользователь отклонил предложение, корзина не изменена."));render()}
+            .setPositiveButton("Применить"){_,_->
+                if(items!=previous||budget!=limit||delivery!=shipping){toast("Условия изменились. Повтори запрос.")}
+                else if(proposal.catalogUpdated?.let{System.currentTimeMillis()-it !in 0L..21_600_000L}==true){toast("Цены устарели. Повтори запрос.")}
+                else{items=proposed;currentPlan=null;assistantHistory.add(AssistantMessage("assistant","Приложение: пользователь подтвердил замену корзины."));tab=0;update()}
+            }.show()
     }
     private fun appSettings(){
         val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
