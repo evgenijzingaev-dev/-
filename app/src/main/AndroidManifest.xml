@@ -3,6 +3,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application android:usesCleartextTraffic="false" android:allowBackup="false" android:label="Умная корзина" android:theme="@style/AppTheme" android:supportsRtl="true" android:icon="@drawable/ic_basket">
         <provider android:name=".UpdateProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true"/>
+        <activity android:name=".ChatGptSettingsActivity" android:exported="false"/>
         <activity android:name=".NutritionActivity" android:exported="false"/>
         <activity android:name=".CatalogSyncActivity" android:exported="false"/>
         <activity android:name=".CartTransferActivity" android:exported="false"/>

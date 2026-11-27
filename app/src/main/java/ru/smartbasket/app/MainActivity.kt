@@ -193,6 +193,7 @@ class MainActivity : Activity() {
         addButton(panel,"Проверить обновление",true){dlg.dismiss();updater.check(true)}
         addButton(panel,"Установить скачанное обновление"){dlg.dismiss();updater.installDownloaded()}
         addButton(panel,"Бюджет и доставка"){dlg.dismiss();budgetDialog()}
+        addButton(panel,"Подключение ChatGPT"){dlg.dismiss();startActivity(Intent(this,ChatGptSettingsActivity::class.java))}
         dlg.show()
     }
     private fun planSettings(){
