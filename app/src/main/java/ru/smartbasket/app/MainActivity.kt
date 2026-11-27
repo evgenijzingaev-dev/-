@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private val nutritionCache by lazy { NutritionCache(this) }
     private var tab = 3
     private var days = 3
+    private var calorieTarget:Int? = null
     private var promptDraft = ""
     private var currentPlan: MealPlan? = null
     private var guided = false
@@ -143,7 +144,7 @@ class MainActivity : Activity() {
         hero.addView(label("Что будем готовить?",24f,ink,true))
         hero.addView(label("Меню и покупки в одном месте",15f,gray))
         val input=EditText(this).apply {
-            setText(promptDraft);textSize=18f;hint="Например: завтраки на 3 дня на 1500 ₽"
+            setText(promptDraft);textSize=18f;hint="Например: меню на 3 дня за 3000 ₽, 1800 ккал в день"
             minLines=3;maxLines=6;gravity=Gravity.TOP
             inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setPadding(dp(12),dp(12),dp(12),dp(12));background=rounded(bg,12)
@@ -159,17 +160,18 @@ class MainActivity : Activity() {
         shortcuts.addView(link("Вставить список"){importDialog("")},LinearLayout.LayoutParams(0,-2,1f))
         hero.addView(shortcuts)
         val params=horizontal()
-        val details=label("$days дн.  ·  $portions порц.  ·  "+rub(budget),16f,gray,true)
+        val details=label("$days дн.  ·  $portions порц.  ·  "+rub(budget)+(calorieTarget?.let{" · $it ккал" }?:""),16f,gray,true)
         params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
         addButton(hero,"Составить меню",true) {
             try {
-                val req=parseRequest(promptDraft,days,portions.coerceAtMost(20),budget)
-                previewPlan(buildPlan(req))
+                val parsed=parseRequest(promptDraft,days,portions.coerceAtMost(20),budget)
+                val req=if(parsed.kcalTarget==null)parsed.copy(kcalTarget=calorieTarget)else parsed
+                planFromCatalog(req)
             }catch(e:Exception){toast(e.message?:"Проверь запрос")}
         }
-        hero.addView(label("Подбор из встроенных рецептов; цены проверяются отдельно.",14f,gray))
+        hero.addView(label("Меню из доступных продуктов с учётом бюджета и КБЖУ. Цель калорийности необязательна.",14f,gray))
         val shop=card(body)
         shop.addView(label("Пятёрочка",19f,ink,true))
         shop.addView(label(catalogLabel(),15f,gray))
@@ -194,13 +196,15 @@ class MainActivity : Activity() {
         dlg.show()
     }
     private fun planSettings(){
+        val kcal=field(calorieTarget?.toString().orEmpty(),hint="Необязательно",numeric=true)
         val d=field(days.toString(),numeric=true)
         val p=field(portions.toString(),numeric=true)
         val b=field("${budget/100}.${(budget%100).toString().padStart(2,'0')}",numeric=true,decimal=true)
-        dialog("Параметры меню",fields("Дней (1–14)" to d,"Порций (1–20)" to p,"Бюджет, ₽" to b)){
+        dialog("Параметры меню",fields("Дней (1–14)" to d,"Порций (1–20)" to p,"Бюджет, ₽" to b,"Ккал на человека за день" to kcal)){
             val n=d.text.toString().toIntOrNull();val count=p.text.toString().toIntOrNull();val limit=money(b.text.toString())
-            if(n==null||n !in 1..14||count==null||count !in 1..20||limit==null)false
-            else{days=n;portions=count;budget=limit;update();true}
+            val target=kcal.text.toString().trim().toIntOrNull()
+            if(n==null||n !in 1..14||count==null||count !in 1..20||limit==null||(!kcal.text.isBlank()&&(target==null||target !in 100..6000)))false
+            else{days=n;portions=count;budget=limit;calorieTarget=target;update();true}
         }
     }
     private fun voice(){
@@ -212,14 +216,40 @@ class MainActivity : Activity() {
             startActivityForResult(i,702)
         }catch(_:Exception){toast("Распознавание речи недоступно на устройстве")}
     }
+    private fun planFromCatalog(req:PlanRequest){
+        val progress=AlertDialog.Builder(this).setTitle("Подбираем меню").setMessage("Сравниваем ассортимент, стоимость упаковок и КБЖУ…").setNegativeButton("Отмена",null).create()
+        val previous=items
+        val deliveryCost=delivery
+        progress.show()
+        Thread{
+            try{
+                val snapshot=LocalCatalog(this).read()
+                val fresh=snapshot!=null&&System.currentTimeMillis()-snapshot.updated in 0L..(6*60*60*1000L)
+                val cached=mutableMapOf<String,ProductNutrition?>()
+                val result=if(fresh&&snapshot!=null)buildCatalogPlan(req,snapshot.entries,deliveryCost,previous){url->
+                    cached.getOrPut(url){nutritionCache.get(url)}
+                }else null
+                runOnUiThread{
+                    if(isFinishing||isDestroyed||!progress.isShowing)return@runOnUiThread
+                    progress.dismiss()
+                    if(items!=previous||delivery!=deliveryCost){toast("Условия изменились. Повтори подбор.");return@runOnUiThread}
+                    if(result!=null)previewPlan(result.plan,result,req)
+                    else AlertDialog.Builder(this).setTitle(if(fresh)"Не найден вариант" else "Нужны свежие цены")
+                        .setMessage(if(fresh)"Не удалось найти меню в рамках бюджета, доступного ассортимента и ограничений. Попробуй изменить параметры." else "Обнови каталог, чтобы подобрать реальные товары и цены.")
+                        .setNegativeButton("Назад",null).setPositiveButton(if(fresh)"Изменить параметры" else "Обновить каталог"){_,_->if(fresh)planSettings()else syncCatalog()}
+                        .setNeutralButton("Меню без цен"){_,_->previewPlan(buildPlan(req),null,req)}.show()
+                }
+            }catch(e:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed&&progress.isShowing){progress.dismiss();toast("Не удалось подобрать меню")}}}
+        }.start()
+    }
     private fun nutritionDialog(){
         val report=basketNutrition(items,nutritionCache::get)
         val rows=report.lines.joinToString("\n"){line->line.name+": "+(line.total?.label()?.let{if(line.estimated)"≈ "+it else it} ?: "нет данных")}
         val mealText=currentPlan?.let{plan->
             "\n\nМеню · на одну порцию:\n"+plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->
-                val reports=meals.map{it to recipeNutrition(it.recipe,items,nutritionCache::get)}
+                val reports=meals.map{it to mealNutrition(it,items,nutritionCache::get)}
                 val total=NutritionReport(reports.flatMap{it.second.lines})
-                "День "+day+" · "+total.summary()+"\n"+reports.joinToString("\n"){(meal,r)->meal.recipe.name+": "+(if(r.missing>0)"неполные данные" else if(r.estimated>0)"≈ "+r.total.label() else r.total.label())}
+                "День "+day+" · "+total.summary()+"\n"+reports.joinToString("\n"){(meal,r)->mealTitle(meal)+": "+(if(r.missing>0)"неполные данные" else if(r.estimated>0)"≈ "+r.total.label() else r.total.label())}
             }
         }.orEmpty()
         val urls=items.map{it.storeUrl}.filter{storeProductUrl(Uri.parse(it))}.distinct()
@@ -229,20 +259,29 @@ class MainActivity : Activity() {
         if(pending.isNotEmpty())d.setNeutralButton("Уточнить КБЖУ (${pending.size})"){_,_->startActivityForResult(Intent(this,NutritionActivity::class.java).putStringArrayListExtra("urls",ArrayList(pending)),705)}
         d.show()
     }
-    private fun previewPlan(plan:MealPlan) {
-        val proposed=plan.ingredients()
-        val menu=plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->"День $day\n"+meals.joinToString("\n"){val n=recipeNutrition(it.recipe,emptyList()){null};"${it.kind}: ${it.recipe.name}\n"+(if(n.missing>0)"КБЖУ неполные" else "≈ "+n.total.label()+" / порция")}}
-        val details="$menu\n\n${proposed.size} позиций · ${plan.portions} порц. · бюджет ${rub(plan.budget)}\nЦены не проверены. Это меню, а не подтверждённая корзина."
-        val d=AlertDialog.Builder(this).setTitle("Предварительное меню").setMessage(details)
+    private fun previewPlan(plan:MealPlan,priced:PricedMealPlan?=null,req:PlanRequest?=null) {
+        val proposed=priced?.items?:plan.ingredients()
+        val lookup=nutritionCache::get
+        val menu=plan.meals.groupBy{it.day}.entries.joinToString("\n\n"){(day,meals)->
+            val reports=meals.map{it to mealNutrition(it,proposed,lookup)}
+            val daily=NutritionReport(reports.flatMap{it.second.lines})
+            "День "+day+" · на человека\n"+daily.summary()+"\n"+reports.joinToString("\n"){(meal,n)->
+                meal.kind+": "+mealTitle(meal)+"\n"+(if(n.missing>0)"КБЖУ неполные" else (if(n.estimated>0)"≈ " else "")+n.total.label()+" / порция")
+            }
+        }
+        val goal=req?.kcalTarget?.let{calorieGoalSummary(plan,proposed,it,req.kcalCeiling,lookup)}.orEmpty()
+        val cost=if(priced==null)"Цены не проверены. Бюджет не подтверждён." else "Покупки с доставкой: "+rub(priced.total)+" · остаток "+rub(plan.budget-priced.total)+"\nЦены из локального каталога; проверь перед заказом."
+        val details=cost+"\n"+goal+"\n"+plan.portions+" порц. · бюджет "+rub(plan.budget)+"\n\n"+menu
+        val d=AlertDialog.Builder(this).setTitle(if(priced==null)"Предварительное меню" else "Меню по каталогу").setMessage(details)
             .setNegativeButton("Назад",null).setPositiveButton(if(items.isEmpty())"Создать список" else "Заменить список"){_,_->
                 val previous=items.associateBy{key(it.name,it.unit)}
-                items=proposed.map{p->previous[key(p.name,p.unit)]?.let{p.copy(atHome=it.atHome,pack=it.pack,price=null)}?:p}
+                items=if(priced!=null)proposed else proposed.map{p->previous[key(p.name,p.unit)]?.let{p.copy(atHome=it.atHome,pack=it.pack,price=null)}?:p}
                 budget=plan.budget;portions=plan.portions;days=plan.meals.maxOf{it.day};currentPlan=plan;tab=0;update()
             }
-        if(items.isNotEmpty())d.setNeutralButton("Добавить к списку"){_,_->
+        if(items.isNotEmpty()&&priced==null)d.setNeutralButton("Добавить к списку"){_,_->
             try{
                 items=merge(items,proposed.map{Ingredient(it.name,it.amount,it.unit)},1,1)
-                budget=plan.budget;portions=plan.portions;tab=0;update()
+                currentPlan=null;budget=plan.budget;portions=plan.portions;tab=0;update()
             }catch(e:Exception){toast(e.message?:"Не удалось добавить")}
         }
         d.show()
@@ -274,7 +313,7 @@ class MainActivity : Activity() {
             "Поделиться списком" to {share()},
             "Очистить список" to {AlertDialog.Builder(this).setTitle("Удалить все покупки?").setNegativeButton("Отмена",null).setPositiveButton("Очистить"){_,_->items=emptyList();update()}.show();Unit})
         c.addView(tools)
-        currentPlan?.let { plan->c.addView(link("Посмотреть меню  ›"){AlertDialog.Builder(this).setTitle("Меню").setMessage(plan.meals.joinToString("\n"){"День ${it.day} · ${it.kind}: ${it.recipe.name}"}).setPositiveButton("ОК",null).show()}) }
+        currentPlan?.let { plan->c.addView(link("Посмотреть меню  ›"){AlertDialog.Builder(this).setTitle("Меню").setMessage(plan.meals.joinToString("\n"){"День ${it.day} · ${it.kind}: ${mealTitle(it)}"}).setPositiveButton("ОК",null).show()}) }
         if(items.isEmpty()) { val empty=card(body); empty.addView(label("Пока нет покупок",18f,ink,true)); empty.addView(label("Выбери рецепты или добавь свои продукты.",14f,gray)); addButton(empty,"Выбрать рецепты") { tab=1;render() }; return }
         val progress = label("Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}",19f,ink,true)
         body.addView(progress)

@@ -16,10 +16,12 @@ fun publicImageUrl(raw:String):String=try{
     if(raw.length<=2048&&u.scheme=="https"&&!u.host.isNullOrBlank()&&u.userInfo==null&&u.port in listOf(-1,443))raw else ""
 }catch(_:Exception){""}
 
-fun findCatalogMatch(entries:List<CatalogEntry>,item:BasketItem):CatalogMatch? =
+fun catalogMatches(entries:List<CatalogEntry>,item:BasketItem):Sequence<CatalogMatch> =
     entries.asSequence().filter{validTransferUrl(it.url)||it.plu.matches(Regex("[0-9]{1,20}"))}
         .mapNotNull{e->(if(e.plu.isNotBlank()) apiOffer(e,item.unit) else parseStoreOffer(e.text,item.unit))?.takeIf{!it.conditional&&offerMatches(item.name,it.description)}?.let{CatalogMatch(e,it)}}
-        .minByOrNull{it.offer.total(item.need)}
+
+fun findCatalogMatch(entries:List<CatalogEntry>,item:BasketItem):CatalogMatch? =
+    catalogMatches(entries,item).minByOrNull{it.offer.total(item.need)}
 
 fun displayCatalogPrice(text:String):Long? {
     val t=text.replace(Regex("[\\s\\u00a0\\u202f]+")," ")
