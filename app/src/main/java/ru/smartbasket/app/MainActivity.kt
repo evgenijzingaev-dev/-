@@ -320,6 +320,7 @@ class MainActivity : Activity() {
             m.macros()?.let{panel.addView(label("Пример БЖУ: "+it.protein+" / "+it.fat+" / "+it.carbs+" г в сутки",14f,gray))}
             panel.addView(link("Дневник питания"){d.dismiss();foodLogDialog(i)})
         }
+        addButton(panel,"Импорт моих данных Health Connect"){d.dismiss();startActivity(Intent(this,FamilyHealthActivity::class.java))}
         if(members.size<12)addButton(panel,"Добавить члена семьи"){d.dismiss();editFamily(null)}
         d.show()
     }
