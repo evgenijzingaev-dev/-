@@ -28,6 +28,7 @@ class BatchQuoteActivity:Activity(){
     private var running=false
     private var generation=0
     private var best:VisibleOffer?=null
+    private var incomplete=0
     private var stableSince=0L
     private var lastState=""
     private var pendingRead:Runnable?=null
@@ -49,7 +50,7 @@ class BatchQuoteActivity:Activity(){
         status=TextView(this).apply{setPadding(dp(12),dp(10),dp(12),dp(10));textSize=16f;text="Войди на сайте при необходимости, выбери адрес доставки. Затем запусти подбор. Товары пока не добавляются."}
         layout.addView(status)
         val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
-        start=Button(this).apply{text="Подобрать все цены";isAllCaps=false;setOnClickListener{if(!running){running=true;isEnabled=false;index=0;quotes.clear();next()}}}
+        start=Button(this).apply{text="Подобрать все цены";isAllCaps=false;setOnClickListener{if(!running){running=true;isEnabled=false;index=0;incomplete=0;quotes.clear();next()}}}
         skip=Button(this).apply{text="Пропустить";isAllCaps=false;isEnabled=false;setOnClickListener{if(running)complete(null)}}
         row.addView(start,LinearLayout.LayoutParams(0,dp(54),2f))
         row.addView(skip,LinearLayout.LayoutParams(0,dp(54),1f))
@@ -90,7 +91,7 @@ class BatchQuoteActivity:Activity(){
         skip.isEnabled=true
         val g=generation
         web.loadUrl(expected)
-        handler.postDelayed({if(running&&generation==g)complete(best)},120000)
+        handler.postDelayed({if(running&&generation==g){incomplete++;complete(best)}},120000)
         queueRead(g,4000)
     }
     private fun queueRead(g:Int,delay:Long){
@@ -144,7 +145,7 @@ class BatchQuoteActivity:Activity(){
         }
         status.text="Результат подбора: "+known.size+"/"+quotes.size
         val total=subtotal+delivery+other
-        val message="Известные расходы с доставкой: "+rub(total)+"\nБюджет: "+rub(budget)+"\nНе найдено: "+unknown+"\n"+(if(total>budget)"Известные расходы выше бюджета.\n" else if(unknown>0)"Бюджет ещё не подтверждён.\n" else "Проверь реальные цены в магазине.\n")+"\n"+lines+"\n\nПеренос сохраняет выбранные карточки, фасовки и локальные цены. Товары в магазине не добавлены."
+        val message="Известные расходы с доставкой: "+rub(total)+"\nБюджет: "+rub(budget)+"\nНе найдено: "+unknown+"\n"+(if(total>budget)"Известные расходы выше бюджета.\n" else if(unknown>0)"Бюджет ещё не подтверждён.\n" else "Проверь реальные цены в магазине.\n")+(if(incomplete>0)"\nНе дождались полной выдачи для "+incomplete+" поз. Лучший вариант только среди загруженных товаров." else "")+"\n"+lines+"\n\nПеренос сохраняет выбранные карточки, фасовки и локальные цены. Товары в магазине не добавлены."
         val d=AlertDialog.Builder(this).setTitle("Проверь предложенные товары").setMessage(message).setNegativeButton("Закрыть"){_,_->finish()}
         if(known.isNotEmpty())d.setPositiveButton("Сохранить товары"){_,_->
             val a=JSONArray()
@@ -161,7 +162,7 @@ class BatchQuoteActivity:Activity(){
           const more=[...document.querySelectorAll('button,[role="button"]')].filter(b=>b.getClientRects().length>0&&!b.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((b.innerText||'').trim()));
           const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(x=>x.getClientRects().length>0);
           const bottom=root.scrollTop+root.clientHeight>=root.scrollHeight-20;
-          const signature=cards.length+'|'+root.scrollHeight+'|'+(cards.at(-1)?.href||'');
+          const signature=cards.length+'|'+root.scrollHeight+'|'+((cards.length?cards[cards.length-1].href:''));
           if(!loading){
             if(more.length===1)more[0].click();
             else if(!bottom)window.scrollBy(0,Math.max(300,window.innerHeight*0.8));
