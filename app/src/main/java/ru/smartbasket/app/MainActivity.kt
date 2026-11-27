@@ -193,6 +193,7 @@ class MainActivity : Activity() {
         params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
+        addButton(hero,"Меню семьи на неделю"){if(!assistantBusy){if(!family.sharing()||family.read().isEmpty())familyDialog() else {promptDraft="Составь меню на 7 дней для всей семьи: завтрак, обед и ужин, индивидуальные порции, КБЖУ взрослых, учти запасы и бюджет. Подготовь общую корзину покупок.";if(chatConnection.connected())askAssistant() else openChatGptSettings()}}}
         hero.addView(link("Моя семья · "+family.read().size+" чел.  ›"){if(!assistantBusy)familyDialog()})
         addButton(hero,"Рекомендации для семьи на сегодня"){
             if(!assistantBusy){
