@@ -109,7 +109,7 @@ class AppUpdater(private val a:Activity){
         busy=true
         toast("Скачивание версии "+release.version)
         Thread{
-            val tmp=File(target.parentFile,"download.tmp")
+            val tmp=File(target.parentFile,"download.apk")
             try{
                 target.parentFile?.mkdirs()
                 val hash=MessageDigest.getInstance("SHA-256")
