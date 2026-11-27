@@ -98,6 +98,7 @@ class AppUpdater(private val a:Activity){
                     busy=false
                     if(!alive())return@runOnUiThread
                     if(release==null){if(manual)toast("Установлена последняя версия")}
+                    else if(manual)download(release)
                     else AlertDialog.Builder(a).setTitle("Доступно обновление "+release.version)
                         .setMessage("Скачать APK напрямую из GitHub и установить поверх приложения? Корзина сохранится при совпадении подписи.")
                         .setNegativeButton("Позже",null).setPositiveButton("Скачать обновление"){_,_->download(release)}.show()
