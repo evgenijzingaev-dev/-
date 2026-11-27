@@ -13,6 +13,8 @@ class ChatGptSettingsActivity:Activity(){
     private lateinit var test:Button
     private lateinit var disconnect:Button
     private lateinit var reconnect:Button
+    private lateinit var network:Button
+    private lateinit var dns:CheckBox
     private var busy=false
     private fun alive()=!isDestroyed&&!isFinishing
     private val green=android.graphics.Color.rgb(25,104,72)
@@ -67,6 +69,18 @@ class ChatGptSettingsActivity:Activity(){
         disconnect=action("Отключить аккаунт"){signOut()}
         reconnect=action("Подключить заново"){signIn()}
         card.addAction(connect);card.addAction(test);card.addAction(reconnect);card.addAction(disconnect)
+        dns=CheckBox(this).apply{
+            text="Резервный защищённый DNS (Cloudflare)"
+            isChecked=connection.encryptedDnsEnabled()
+            setOnCheckedChangeListener{_,checked->connection.setEncryptedDnsEnabled(checked)}
+        }
+        card.addView(dns)
+        card.addView(TextView(this).apply{
+            text="Если системный DNS не найдёт сервер OpenAI, только имена auth.openai.com и api.openai.com будут запрошены через HTTPS у Cloudflare. Токены и содержимое запросов туда не передаются. VPN и проверка сертификатов остаются без изменений."
+            textSize=14f;setTextColor(gray)
+        })
+        network=action("Проверить сеть без входа"){work("Проверяем серверы OpenAI…"){connection.checkNetwork()}}
+        card.addAction(network)
         card.addAction(action("Что передаётся и как расходуется лимит"){
             android.app.AlertDialog.Builder(this).setTitle("Данные и лимиты")
                 .setMessage("Проверка связи не отправляет корзину. При запросах из приложения OpenAI получает запрос и необходимые для ответа данные корзины и каталога. Доступ зависит от разрешений и лимита аккаунта. Сеанс обновляется, пока действует разрешение.")
@@ -84,7 +98,7 @@ class ChatGptSettingsActivity:Activity(){
         connect.visibility=if(connected)android.view.View.GONE else android.view.View.VISIBLE
         test.visibility=if(connected)android.view.View.VISIBLE else android.view.View.GONE
         disconnect.visibility=test.visibility;reconnect.visibility=test.visibility
-        connect.isEnabled=!busy;test.isEnabled=!busy;disconnect.isEnabled=!busy;reconnect.isEnabled=!busy
+        connect.isEnabled=!busy;test.isEnabled=!busy;disconnect.isEnabled=!busy;reconnect.isEnabled=!busy;network.isEnabled=!busy;dns.isEnabled=!busy
     }
     private fun work(message:String,task:()->String){
         if(busy)return
@@ -94,7 +108,7 @@ class ChatGptSettingsActivity:Activity(){
             runOnUiThread{if(alive()){busy=false;refresh();status.text=result}}
         }.start()
     }
-    private fun signIn()=work("Ожидаем вход в браузере… Вернись в приложение после разрешения."){
+    private fun signIn()=work("Проверяем сеть и открываем вход в браузере…"){
         connection.signIn{url->runOnUiThread{if(alive())startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url)))}}
         "Вход подтверждён. Теперь проверь связь."
     }
