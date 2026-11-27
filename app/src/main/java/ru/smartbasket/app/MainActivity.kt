@@ -304,7 +304,7 @@ class MainActivity : Activity() {
     private fun familyDialog(){
         val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
         val members=family.read()
-        panel.addView(label("Профили хранятся на устройстве. При включении передачи возраст, рост, вес, активность, цели и ограничения без имени передаются OpenAI при запросах. Указывай только данные, которыми вправе делиться.",14f,gray))
+        panel.addView(label("Профили хранятся на устройстве. При включении передачи возраст, рост, вес, пол, активность, цели, ограничения и записи дневника без имени передаются OpenAI при запросах. Указывай только данные, которыми вправе делиться.",14f,gray))
         val share=CheckBox(this).apply{ text="Учитывать семейные данные в ChatGPT";isChecked=family.sharing()
             setOnCheckedChangeListener{_,checked->family.setSharing(checked)} }
         panel.addView(share)
@@ -316,6 +316,7 @@ class MainActivity : Activity() {
         val d=AlertDialog.Builder(this).setTitle("Моя семья").setView(ScrollView(this).apply{addView(panel)}).setPositiveButton("Закрыть",null).create()
         members.forEachIndexed{i,m->
             panel.addView(link(m.name+" · "+m.age+" лет  ›"){d.dismiss();editFamily(i)})
+            m.maintenance()?.let{panel.addView(label("Ориентир поддержания веса: "+it+" ккал/сутки",14f,gray))}
             panel.addView(link("Дневник питания"){d.dismiss();foodLogDialog(i)})
         }
         if(members.size<12)addButton(panel,"Добавить члена семьи"){d.dismiss();editFamily(null)}
@@ -347,10 +348,12 @@ class MainActivity : Activity() {
         val h=field(m?.height?.toString().orEmpty(),numeric=true)
         val w=field(m?.weight?.toString().orEmpty(),numeric=true,decimal=true)
         val a=field(m?.activity.orEmpty(),"Шаги, тренировки, работа")
+        val sex=field(m?.sex.orEmpty(),"Мужской / Женский")
+        val level=field(m?.activityLevel.orEmpty(),"Низкая / Лёгкая / Умеренная / Высокая")
         val g=field(m?.goal.orEmpty(),"Поддержание веса, набор массы")
         val t=field(m?.tastes.orEmpty(),"Любимые и нелюбимые блюда")
         val r=field(m?.restrictions.orEmpty(),"Аллергии и ограничения")
-        val form=fields("Имя или псевдоним" to n,"Возраст (лет)" to age,"Рост (см, необязательно)" to h,"Вес (кг, необязательно)" to w,"Активность" to a,"Цель (только для взрослых)" to g,"Предпочтения" to t,"Ограничения" to r)
+        val form=fields("Имя или псевдоним" to n,"Возраст (лет)" to age,"Рост (см, необязательно)" to h,"Вес (кг, необязательно)" to w,"Активность" to a,"Пол для расчёта (необязательно)" to sex,"Уровень активности (необязательно)" to level,"Цель (только для взрослых)" to g,"Предпочтения" to t,"Ограничения" to r)
         val d=AlertDialog.Builder(this).setTitle("Профиль семьи").setView(ScrollView(this).apply{addView(form)}).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null)
         if(index!=null)d.setNeutralButton("Удалить"){_,_->family.save(members.filterIndexed{i,_->i!=index});render();familyDialog()}
         val dlg=d.create()
@@ -359,7 +362,7 @@ class MainActivity : Activity() {
             val hs=h.text.toString();val ws=w.text.toString()
             val height=hs.toIntOrNull();val weight=ws.replace(',','.').toDoubleOrNull()
             if(years==null || (hs.isNotBlank()&&height==null) || (ws.isNotBlank()&&weight==null)){toast("Проверь числовые поля");return@setOnClickListener}
-            val member=FamilyMember(n.text.toString().trim(),years,height,weight,a.text.toString(),if(years<18)"" else g.text.toString(),t.text.toString(),r.text.toString(),m?.id?:java.util.UUID.randomUUID().toString())
+            val member=FamilyMember(n.text.toString().trim(),years,height,weight,a.text.toString(),if(years<18)"" else g.text.toString(),t.text.toString(),r.text.toString(),m?.id?:java.util.UUID.randomUUID().toString(),sex.text.toString().trim(),level.text.toString().trim())
             if(!member.valid()){toast("Проверь данные профиля");return@setOnClickListener}
             val updated=members.toMutableList();if(index==null)updated.add(member)else updated[index]=member
             family.save(updated);dlg.dismiss();render();familyDialog()
