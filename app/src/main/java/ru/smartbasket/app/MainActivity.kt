@@ -254,6 +254,22 @@ class MainActivity : Activity() {
         show("")
         AlertDialog.Builder(this).setTitle("Каталог магазина").setView(wrap).setPositiveButton("Закрыть",null).show()
     }
+    private fun discountReport(){
+        val snapshot=LocalCatalog(this).read()?:run{syncCatalog();return}
+        if(System.currentTimeMillis()-snapshot.updated !in 0L..(6*60*60*1000L)){
+            toast("Каталог устарел. Сначала обнови цены.");syncCatalog();return
+        }
+        val progress=AlertDialog.Builder(this).setTitle("Сравнение цен").setMessage("Сопоставление с историей…").setNegativeButton("Закрыть",null).create()
+        progress.show()
+        Thread{
+            val report=try{PriceHistory(this).use{it.report(snapshot)}}catch(_:Exception){"Не удалось прочитать историю цен."}
+            runOnUiThread{
+                if(isFinishing||isDestroyed||!progress.isShowing)return@runOnUiThread
+                progress.dismiss()
+                AlertDialog.Builder(this).setTitle("Реальная выгода").setMessage(report).setPositiveButton("Закрыть",null).show()
+            }
+        }.start()
+    }
     private fun storeScreen() {
         val updates=card(body);updates.addView(label("Версия приложения: "+updater.installedVersion(),17f,ink,true))
         addButton(updates,"Проверить обновления"){updater.check(true)}
@@ -261,6 +277,7 @@ class MainActivity : Activity() {
         val catalog=card(body);catalog.addView(label("Каталог и цены",22f,green,true));catalog.addView(label(catalogLabel(),14f,gray))
         addButton(catalog,"Загрузить / обновить весь каталог",true){syncCatalog()}
         addButton(catalog,"Поиск в загруженных товарах"){catalogBrowser()}
+        addButton(catalog,"Реальная выгода и история цен"){discountReport()}
         val c=card(body); c.addView(label("Пятёрочка",23f,green,true)); c.addView(label("Встроенный браузер открывает официальный сайт. Войди через X5ID, выбери адрес доставки. Сессия хранится в WebView на телефоне.",16f)); addButton(c,"Открыть магазин в приложении",true){openStore()}; addButton(c,"Скопировать список покупок"){copy(listText())}; c.addView(label("Для конкретного ингредиента нажми «В магазин», выбери товар и перенеси цену и фасовку. Добавление и проверка корзины выполняются на сайте. Режим экспериментальный.",14f,gray))
         val help=card(body); help.addView(label("Передача из ChatGPT",19f,ink,true)); help.addView(label("Поделись обычным списком ингредиентов из ChatGPT или вставь его на главной. Например: Молоко — 500 мл.",15f)); addButton(help,"Скопировать шаблон запроса"){copy("Составь список ингредиентов с количеством в граммах, миллилитрах или штуках, по одному продукту на строку.")}
     }
