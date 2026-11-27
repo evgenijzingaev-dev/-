@@ -4,6 +4,11 @@ import kotlin.math.roundToInt
 
 /** Rough adult maintenance estimate, not a prescription or a weight-loss target. */
 object FamilyNutrition {
+    data class Macros(val protein:Int,val fat:Int,val carbs:Int)
+    fun macros(kcal:Int):Macros? {
+        if(kcal !in 1200..4500)return null
+        return Macros((kcal*0.20/4).roundToInt(),(kcal*0.30/9).roundToInt(),(kcal*0.50/4).roundToInt())
+    }
     fun maintenance(age:Int,height:Int?,weight:Double?,sex:String,activity:String):Int? {
         if(age !in 18..65 || height==null || height !in 130..220 || weight==null ||
             !weight.isFinite() || weight !in 40.0..200.0) return null
