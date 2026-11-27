@@ -26,9 +26,26 @@ class FamilyProfiles(context:Context){
     }catch(_:Exception){emptyList()}
     fun save(members:List<FamilyMember>){
         require(members.size<=12 && members.all{it.valid()})
-        prefs.edit().putString("members",JSONArray(members.map{it.json()}).toString()).apply()
+        val old=read()
+        val edit=prefs.edit().putString("members",JSONArray(members.map{it.json()}).toString())
+        if(old.size!=members.size || old.map{it.name}!=members.map{it.name}){
+            for(i in 0..11)edit.remove("food_log_"+i)
+        }
+        edit.apply()
     }
-    fun sharedContext():String = if(prefs.getBoolean("share",false)) JSONArray(read().map{it.json().removeName()}).toString() else "[]"
+    fun sharedContext():String = if(sharing()) JSONArray(read().mapIndexed{i,m->
+        m.json().removeName().put("member_number",i+1).put("recent_food_log",JSONArray(log(i)))
+    }).toString() else "[]"
+    fun log(index:Int):List<String> = try{
+        val a=JSONArray(prefs.getString("food_log_"+index,"[]"))
+        (0 until a.length()).map{a.getString(it)}.takeLast(14)
+    }catch(_:Exception){emptyList()}
+    fun record(index:Int,food:String,rating:String){
+        require(index in read().indices && food.isNotBlank() && food.length<=200 && rating in listOf("Съедено","Понравилось","Не понравилось"))
+        val entry=java.time.LocalDate.now().toString()+" · "+rating+" · "+food.trim()
+        prefs.edit().putString("food_log_"+index,JSONArray((log(index)+entry).takeLast(14)).toString()).apply()
+    }
+    fun clearLog(index:Int){prefs.edit().remove("food_log_"+index).apply()}
     fun sharing()=prefs.getBoolean("share",false)
     fun setSharing(value:Boolean){prefs.edit().putBoolean("share",value).apply()}
     private fun JSONObject.removeName():JSONObject{remove("name");return this}
