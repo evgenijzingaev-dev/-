@@ -183,6 +183,9 @@ class MainActivity : Activity() {
             c.addView(label(if(s.complete)rub(s.totalKnown) else "Цены ещё не проверены",15f,gray))
             c.addView(link("Открыть корзину  ›"){tab=0;render()})
         }
+        gap(body,6)
+        body.addView(label("Версия приложения "+updater.installedVersion(),15f,gray).apply{gravity=Gravity.CENTER})
+        addButton(body,"Проверить обновление"){updater.check(true)}
     }
     private fun planSettings(){
         val d=field(days.toString(),numeric=true)
