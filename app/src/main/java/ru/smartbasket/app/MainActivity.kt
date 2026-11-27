@@ -244,7 +244,7 @@ class MainActivity : Activity() {
             }}}
         }.start()
     }
-    private fun showAssistantProposal(proposal:BasketProposal,previous:List<BasketItem>,limit:Long,shipping:Long){
+    internal fun showAssistantProposal(proposal:BasketProposal,previous:List<BasketItem>,limit:Long,shipping:Long){
         if(items!=previous||budget!=limit||delivery!=shipping){toast("Корзина или бюджет изменились. Повтори запрос.");return}
         val proposed=proposal.items
         val s=summarize(proposed,limit,shipping)
