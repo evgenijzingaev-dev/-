@@ -103,7 +103,7 @@ class MainActivity : Activity() {
             item.addView(label(if(i.need==0L) "Есть дома" else if(cost==null) "Цена или фасовка не указана" else "${i.packs} уп. × ${rub(i.price!!)} = ${rub(cost)}",15f,green,true))
             val buttons=horizontal()
             buttons.addView(button("Цена / количество") { editDialog(index) },LinearLayout.LayoutParams(0,dp(48),1f))
-            buttons.addView(button("В магазин") { copy(i.name); openStore() },LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(6)})
+            buttons.addView(button("В магазин") { openStore(index) },LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(6)})
             item.addView(buttons)
         }
         addButton(body,"Поделиться списком") { share() }
@@ -115,7 +115,7 @@ class MainActivity : Activity() {
         addButton(body,"Перейти в корзину") { tab=0;render() }
     }
     private fun storeScreen() {
-        val c=card(body); c.addView(label("Пятёрочка",23f,green,true)); c.addView(label("Открой официальный сайт, войди в свой аккаунт и выбери адрес доставки. Приложение не получает пароли, SMS, токены или персональные скидки.",16f)); addButton(c,"Открыть официальный каталог",true){openStore()}; addButton(c,"Скопировать список покупок"){copy(listText())}; c.addView(label("Добавление в реальную корзину пока вручную. Цены и фасовки вводятся в локальном списке; автоматического получения наличия нет.",14f,gray))
+        val c=card(body); c.addView(label("Пятёрочка",23f,green,true)); c.addView(label("Встроенный браузер открывает официальный сайт. Войди через X5ID, выбери адрес доставки. Сессия хранится в WebView на телефоне.",16f)); addButton(c,"Открыть магазин в приложении",true){openStore()}; addButton(c,"Скопировать список покупок"){copy(listText())}; c.addView(label("Для конкретного ингредиента нажми «В магазин», выбери товар и перенеси цену и фасовку. Добавление и проверка корзины выполняются на сайте. Режим экспериментальный.",14f,gray))
         val help=card(body); help.addView(label("Передача из ChatGPT",19f,ink,true)); help.addView(label("Попроси ChatGPT вернуть список строк в формате: название;количество;г/мл/шт. Например: Молоко;500;мл. Передай текст через «Поделиться» (если доступно) или скопируй и вставь в импорт.",15f)); addButton(help,"Скопировать шаблон запроса"){copy("Составь список ингредиентов для выбранных рецептов. Верни только строки в формате название;количество;единица (г, мл или шт). Без цен, заголовков и нумерации.")}
     }
     private fun field(value:String="",hint:String="", numeric:Boolean=false, decimal:Boolean=false) = EditText(this).apply { setText(value); this.hint=hint; inputType=if(numeric) InputType.TYPE_CLASS_NUMBER or (if(decimal) InputType.TYPE_NUMBER_FLAG_DECIMAL else 0) else InputType.TYPE_CLASS_TEXT; setSingleLine(true) }
@@ -149,6 +149,23 @@ class MainActivity : Activity() {
     private fun listText()=items.filter{it.need>0 && !it.checked}.joinToString("\n"){"${it.name} — ${it.need} ${it.unit}"}.ifEmpty{"Список пуст"}
     private fun share(){startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,listText()),"Поделиться покупками"))}
     private fun copy(s:String){(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Покупки",s));toast("Скопировано")}
-    private fun openStore(){try{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("https://5ka.ru/catalog/")))}catch(_:Exception){toast("Не найден браузер")}}
+    private fun openStore(index:Int = -1) {
+        val i=items.getOrNull(index)
+        val intent=Intent(this,StoreActivity::class.java)
+        if(i!=null) intent.putExtra("name",i.name).putExtra("unit",i.unit).putExtra("need",i.need).putExtra("key",key(i.name,i.unit))
+        startActivityForResult(intent,701)
+    }
+    override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode!=701||resultCode!=RESULT_OK||data==null)return
+        val k=data.getStringExtra("key")?:return
+        val pack=data.getLongExtra("pack",0)
+        val price=data.getLongExtra("price",-1)
+        if(pack !in 1..10_000_000||price !in 0..100_000_000)return
+        val index=items.indexOfFirst{key(it.name,it.unit)==k}
+        if(index<0)return
+        items=items.toMutableList().also{it[index]=it[index].copy(pack=pack,price=price)}
+        tab=0;update();toast("Цена и фасовка перенесены. Проверь корзину магазина.")
+    }
     private fun toast(s:String){Toast.makeText(this,s,Toast.LENGTH_SHORT).show()}
 }
