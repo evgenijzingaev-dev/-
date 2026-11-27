@@ -114,7 +114,7 @@ fun parseApiProduct(o:JSONObject):CatalogEntry?{
     val available=when(o.opt("is_available")){true->true;false->false;else->null}
     val url=o.optString("url").takeIf(::validTransferUrl).orEmpty()
     val text=name+"\n"+(if(price==null)"Цена неизвестна" else "Обычная цена: "+rub(price)+(if(uom=="кг")" / кг" else ""))+"\n"+(when(available){true->"В наличии";false->"Нет в наличии";null->"Наличие неизвестно"})
-    return CatalogEntry(url,text,plu,name,price,available,uom)
+    return CatalogEntry(url,text,plu,name,price,available,uom,publicImageUrl(o.optString("image_link")))
 }
 fun apiOffer(e:CatalogEntry,unit:String):StoreOffer?{
     val price=e.regular?:return null
