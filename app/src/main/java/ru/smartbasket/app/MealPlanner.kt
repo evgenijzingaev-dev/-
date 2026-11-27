@@ -83,3 +83,41 @@ fun importIngredients(raw:String):ImportedIngredients {
     }
     return ImportedIngredients(entries,ignored)
 }
+
+
+data class PricedMealPlan(val plan:MealPlan,val items:List<BasketItem>,val total:Long)
+
+/** Bounded search over recipes, pricing combined ingredients as whole packages. */
+fun buildCatalogPlan(r:PlanRequest, entries:List<CatalogEntry>, delivery:Long=0L,
+                     home:List<BasketItem> = emptyList()):PricedMealPlan? {
+    if(entries.isEmpty() || delivery>r.budget)return null
+    val stock=home.associateBy{key(it.name,it.unit)}
+    val cache=mutableMapOf<Pair<String,Long>,CatalogMatch?>()
+    fun priced(meals:List<Meal>):PricedMealPlan? {
+        val plan=MealPlan(meals,r.portions,r.budget)
+        val items=plan.ingredients().map { raw->
+            val k=key(raw.name,raw.unit)
+            val item=raw.copy(atHome=stock[k]?.atHome?:0L)
+            if(item.need==0L)item else {
+                val match=cache.getOrPut(k to item.need){findCatalogMatch(entries,item)} ?: return null
+                item.copy(pack=match.offer.pack,price=match.offer.price,storeName=match.offer.description,storeUrl=match.entry.url)
+            }
+        }
+        val summary=summarize(items,r.budget,delivery)
+        return if(summary.complete&&!summary.over)PricedMealPlan(plan,items,summary.totalKnown) else null
+    }
+    if(r.dishes.isNotEmpty())return priced(buildPlan(r).meals)
+    var states=listOf(PricedMealPlan(MealPlan(emptyList(),r.portions,r.budget),emptyList(),delivery))
+    for(day in 1..r.days)for(kind in r.kinds){
+        val pool=when(kind){"Завтрак"->breakfast;"Обед"->lunch;else->dinner}
+        val next=states.flatMap{state->pool.mapNotNull{recipe->
+            priced(state.plan.meals+Meal(day,kind,recipe))
+        }}
+        if(next.isEmpty())return null
+        states=next.sortedWith(compareBy<PricedMealPlan>{
+            val same=it.plan.meals.filter{meal->meal.kind==kind}.map{meal->meal.recipe.name}
+            if(same.size>1&&same.last()==same[same.lastIndex-1])1 else 0
+        }.thenBy{it.total}).take(6)
+    }
+    return states.firstOrNull()
+}
