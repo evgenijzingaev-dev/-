@@ -18,7 +18,7 @@ class ChatGptSettingsActivity:Activity(){
         super.onCreate(state)
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(24,24,24,24)}
         root.addView(TextView(this).apply{text="ChatGPT · экспериментальное подключение";textSize=22f})
-        root.addView(TextView(this).apply{text="Вход через официальный браузер. Использование плана ChatGPT зависит от разрешений и лимитов. Сейчас доступен только тест связи, без отправки корзины или каталога. Для нового сеанса после истечения токена потребуется повторный вход.";textSize=16f})
+        root.addView(TextView(this).apply{text="Вход через официальный браузер. Использование плана ChatGPT зависит от разрешений и лимитов. Тест связи не отправляет корзину. При запросе из главного экрана ChatGPT может читать необходимые данные корзины и каталога. Для нового сеанса после истечения токена потребуется повторный вход.";textSize=16f})
         status=TextView(this).apply{textSize=17f};root.addView(status)
         connect=Button(this).apply{text="Continue with ChatGPT";isAllCaps=false;setOnClickListener{signIn()}}
         test=Button(this).apply{text="Проверить связь с ChatGPT";isAllCaps=false;setOnClickListener{test()}}

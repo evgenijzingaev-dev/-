@@ -187,4 +187,29 @@ class ChatGptConnection(context:Context){
         require(completed&&out.isNotBlank()){"Ответ ChatGPT не завершён"}
         return out.toString()
     }
+
+    /** Completed response only; caller owns the bounded tool loop and local history. */
+    internal fun assistantResponse(model:String,input:JSONArray,tools:JSONArray,instructions:String):JSONObject{
+        val body=JSONObject().put("model",model).put("store",false).put("stream",true)
+            .put("input",input).put("tools",tools).put("instructions",instructions)
+            .put("include",JSONArray().put("reasoning.encrypted_content"))
+        val c=request(api+"/responses",body.toString(),token=access())
+        try{
+            c.inputStream.bufferedReader().useLines{lines->
+                for(line in lines){
+                    if(Thread.currentThread().isInterrupted)error("Запрос отменён")
+                    if(!line.startsWith("data:"))continue
+                    val data=line.removePrefix("data:").trim()
+                    if(data=="[DONE]")break
+                    require(data.length<=2_000_000){"Слишком большой ответ"}
+                    val event=JSONObject(data)
+                    when(event.optString("type")){
+                        "response.completed"->return event.getJSONObject("response")
+                        "response.failed","response.incomplete","error"->error("ChatGPT не завершил запрос. Проверь доступ и лимиты.")
+                    }
+                }
+            }
+        }finally{c.disconnect()}
+        error("Поток ChatGPT прервался")
+    }
 }

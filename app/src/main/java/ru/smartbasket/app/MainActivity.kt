@@ -35,6 +35,8 @@ class MainActivity : Activity() {
     private var days = 3
     private var calorieTarget:Int? = null
     private var promptDraft = ""
+    private val assistantHistory=mutableListOf<AssistantMessage>()
+    private var assistantBusy=false
     private var currentPlan: MealPlan? = null
     private var guided = false
     private val reviewed = mutableSetOf<String>()
@@ -141,10 +143,11 @@ class MainActivity : Activity() {
     }
     private fun homeScreen() {
         val hero=card(body)
-        hero.addView(label("Что будем готовить?",24f,ink,true))
-        hero.addView(label("Меню и покупки в одном месте",15f,gray))
+        hero.addView(label("ChatGPT · умная корзина",24f,ink,true))
+        hero.addView(label("Спроси о покупках, ценах, питании или блюдах. Запрос и необходимые данные корзины/каталога передаются OpenAI.",15f,gray))
+        assistantHistory.takeLast(12).forEach{m->hero.addView(label((if(m.role=="user")"Ты: " else "ChatGPT: ")+m.text,16f,ink))}
         val input=EditText(this).apply {
-            setText(promptDraft);textSize=18f;hint="Например: меню на 3 дня за 3000 ₽, 1800 ккал в день"
+            setText(promptDraft);textSize=18f;hint="Например: что приготовить, чем заменить продукт, как сэкономить?"
             minLines=3;maxLines=6;gravity=Gravity.TOP
             inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setPadding(dp(12),dp(12),dp(12),dp(12));background=rounded(bg,12)
@@ -164,7 +167,9 @@ class MainActivity : Activity() {
         params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
-        addButton(hero,"Составить меню",true) {
+        addButton(hero,if(assistantBusy)"ChatGPT думает…" else "Спросить ChatGPT",true){askAssistant()}
+        addButton(hero,"Новый диалог"){if(!assistantBusy){assistantHistory.clear();render()}}
+        addButton(hero,"Локальный подбор (без ChatGPT)") {
             try {
                 val parsed=parseRequest(promptDraft,days,portions.coerceAtMost(20),budget)
                 val req=if(parsed.kcalTarget==null)parsed.copy(kcalTarget=calorieTarget)else parsed
@@ -185,6 +190,35 @@ class MainActivity : Activity() {
             c.addView(label(if(s.complete)rub(s.totalKnown) else "Цены ещё не проверены",15f,gray))
             c.addView(link("Открыть корзину  ›"){tab=0;render()})
         }
+    }
+    private fun askAssistant(){
+        if(assistantBusy)return
+        val prompt=promptDraft.trim()
+        if(prompt.isEmpty()||prompt.length>4000){toast("Введи запрос до 4000 символов");return}
+        val connection=ChatGptConnection(this)
+        if(!connection.connected()){
+            AlertDialog.Builder(this).setTitle("Подключи ChatGPT").setMessage("Для диалога нужен активный вход и разрешение использования плана.")
+                .setNegativeButton("Отмена",null).setPositiveButton("Подключить"){_,_->startActivity(Intent(this,ChatGptSettingsActivity::class.java))}.show()
+            return
+        }
+        val history=assistantHistory.toList()
+        val previous=items.toList();val limit=budget;val shipping=delivery
+        assistantBusy=true;promptDraft="";render()
+        Thread{
+            try{
+                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get)
+                val answer=engine.ask(history,prompt)
+                runOnUiThread{
+                    if(!isFinishing&&!isDestroyed){
+                        assistantHistory.add(AssistantMessage("user",prompt));assistantHistory.add(AssistantMessage("assistant",answer))
+                        while(assistantHistory.size>12)assistantHistory.removeAt(0)
+                        assistantBusy=false;render()
+                    }
+                }
+            }catch(_:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
+                assistantBusy=false;if(promptDraft.isBlank())promptDraft=prompt;render();toast("Не удалось получить ответ ChatGPT. Проверь подключение и лимиты.")
+            }}}
+        }.start()
     }
     private fun appSettings(){
         val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
