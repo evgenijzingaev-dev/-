@@ -3,6 +3,8 @@ package ru.smartbasket.app
 /** Decisions are based on time since the last observed catalog progress, not total load time. */
 object CatalogStallPolicy {
     const val RELOAD_MS = 20_000L
+    const val END_STABLE_MS = 4_000L
+    const val POLL_MS = 350L
     fun action(idleMs:Long, stage:Int, quietEnd:Boolean):Int = when {
         quietEnd -> 0
         idleMs >= RELOAD_MS -> 3

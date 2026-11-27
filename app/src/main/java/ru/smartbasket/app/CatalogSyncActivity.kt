@@ -77,7 +77,7 @@ class CatalogSyncActivity:Activity(){
                 return true
             }
             override fun onPageFinished(view:WebView,url:String){
-                if(active&&samePage(url,current))schedule(generation,1800)
+                if(active&&samePage(url,current))schedule(generation,500)
             }
             override fun onReceivedSslError(view:WebView,handler:SslErrorHandler,error:SslError){handler.cancel();if(active)finishSync("Ошибка TLS",false)}
             override fun onReceivedHttpError(view:WebView,request:WebResourceRequest,response:WebResourceResponse){
@@ -177,7 +177,7 @@ class CatalogSyncActivity:Activity(){
         status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
         val g=generation;web.loadUrl(current)
         handler.postDelayed({if(active&&generation==g)skipStalled("Превышено время загрузки категории")},900000)
-        schedule(g,5000)
+        schedule(g,1200)
     }
     private fun skipStalled(reason:String){
         lastScan=reason+" · "+lastScan
@@ -211,15 +211,15 @@ class CatalogSyncActivity:Activity(){
         val task=Runnable{pendingRead=null;if(active&&generation==g)read(g)}
         pendingRead=task;handler.postDelayed(task,ms)
     }
-    private fun read(g:Int){
+    private fun read(g:Int,collect:Boolean=false){
         if(reading||!active||g!=generation)return
         if(!samePage(web.url.orEmpty(),current)){
             lastScan="Ожидание страницы каталога";status.text=lastScan
-            if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,3000)
+            if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,1000)
             return
         }
         reading=true;watchCallback(g)
-        web.evaluateJavascript(scanScript){raw->
+        web.evaluateJavascript(if(collect) scanScript else probeScript){raw->
             if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
             clearCallbackWatchdog();val j=decode(raw);reading=false
             val actual=j?.optString("store").orEmpty()
@@ -228,57 +228,47 @@ class CatalogSyncActivity:Activity(){
                 if(missingStoreSince==0L)missingStoreSince=now
                 lastScan=if(j==null) "Скрипт не вернул данные страницы" else "Страница ещё не подтвердила магазин"
                 status.text=lastScan
-                if(now-missingStoreSince>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,2500)
+                if(now-missingStoreSince>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,1000)
                 return@evaluateJavascript
             }
             if(actual!=store){finishSync("Магазин доставки изменился. Выгрузка остановлена.",false);return@evaluateJavascript}
             missingStoreSince=0L
             if(j==null)return@evaluateJavascript
-            val links=j.optJSONArray("categories")
-            lastScan="Ссылок категорий: "+(links?.length()?:0)+" · распознано основных: "+rootSections.size+" · карточек на странице: "+j.optInt("cardCount")+" · прочитано карточек: "+(j.optJSONArray("products")?.length()?:0)
-            var added=0
-            if(atRoot()&&links!=null)for(i in 0 until links.length()){
-                val link=links.optJSONObject(i)?:continue
-                val title=normalized(link.optString("title"))
-                val url=link.optString("url")
-                if(!catalogPage(url)||!Regex("^/catalog/[A-Za-z0-9_-]+--[A-Za-z0-9_-]+/?$").matches(Uri.parse(url).path.orEmpty()))continue
-                val group=primarySections[title]?:continue
-                val old=rootSections[group]
-                if(old==null){rootSections[group]=url;added++}
-                // Prefer the full top-level section, not the nested "all ready meals" subset.
-                else if(group=="готовая еда"&&title=="готовая еда")rootSections[group]=url
-            }
-            val list=if(atRoot())null else j.optJSONArray("products")
-            if(list!=null)for(i in 0 until list.length()){
-                val o=list.optJSONObject(i)?:continue
-                val url=o.optString("url");val text=o.optString("text").take(1200);val photo=publicImageUrl(o.optString("image"))
-                if(validTransferUrl(url)&&text.isNotBlank()){
-                    val k=Uri.parse(url).path.orEmpty().trimEnd('/')
-                    if(pageProducts.add(k))added++
-                    val old=products[k]
-                    if(old==null||displayCatalogPrice(text)!=null||displayCatalogPrice(old.text)==null)products[k]=CatalogEntry(url,text,imageUrl=photo.ifBlank{old?.imageUrl.orEmpty()})
-                }
-            }
-            rounds++
             val pageState=j.optString("pageState")
             val now=android.os.SystemClock.elapsedRealtime()
+            val quietEnd=j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")
             val motion=pageState+"|"+j.optInt("scrollTop")
-            if(added>0||motion!=lastMotion){lastMotion=motion;lastMotionAt=now;recoveryStage=0}
+            if(motion!=lastMotion){lastMotion=motion;lastMotionAt=now;recoveryStage=0}
             val idle=now-lastMotionAt
-            if(added>0||pageState!=lastPageState||j.optBoolean("loading")||!j.optBoolean("bottom")||j.optBoolean("more")){
-                lastPageState=pageState;stableSince=now
-            }else if(stableSince==0L)stableSince=now
-            status.text="Категорий обработано: "+done+" · найдено товаров: "+products.size+" · в очереди: "+queue.size+
-                "\n"+(if(j.optBoolean("loading"))"Ожидание подгрузки" else if(j.optBoolean("bottom"))"Проверка конца категории" else "Прокрутка")+
-                " · без изменений "+(idle/1000)+" с"
-            if(products.size>=30000||rounds>=600){
-                failed++
-                if(atRoot())enqueueRootSections() else done++
-                if(products.size>=30000)finishSync("Достигнут лимит выгрузки",false)else next()
-                return@evaluateJavascript
-            }
-            // Also scroll the root catalog: categories can load below banners.
-            if(now-stableSince>=12000L&&j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")){
+            if(collect&&quietEnd&&pageState==lastPageState){
+                val links=j.optJSONArray("categories")
+                lastScan="Ссылок категорий: "+(links?.length()?:0)+" · распознано основных: "+rootSections.size+" · карточек на странице: "+j.optInt("cardCount")+" · прочитано карточек: "+(j.optJSONArray("products")?.length()?:0)
+                var added=0
+                if(atRoot()&&links!=null)for(i in 0 until links.length()){
+                    val link=links.optJSONObject(i)?:continue
+                    val title=normalized(link.optString("title"))
+                    val url=link.optString("url")
+                    if(!catalogPage(url)||!Regex("^/catalog/[A-Za-z0-9_-]+--[A-Za-z0-9_-]+/?$").matches(Uri.parse(url).path.orEmpty()))continue
+                    val group=primarySections[title]?:continue
+                    val old=rootSections[group]
+                    if(old==null){rootSections[group]=url;added++}
+                    // Prefer the full top-level section, not the nested "all ready meals" subset.
+                    else if(group=="готовая еда"&&title=="готовая еда")rootSections[group]=url
+                }
+                val list=if(atRoot())null else j.optJSONArray("products")
+                if(list!=null)for(i in 0 until list.length()){
+                    val o=list.optJSONObject(i)?:continue
+                    val url=o.optString("url");val text=o.optString("text").take(1200);val photo=publicImageUrl(o.optString("image"))
+                    if(validTransferUrl(url)&&text.isNotBlank()){
+                        val k=Uri.parse(url).path.orEmpty().trimEnd('/')
+                        if(pageProducts.add(k))added++
+                        val old=products[k]
+                        if(old==null||displayCatalogPrice(text)!=null||displayCatalogPrice(old.text)==null)products[k]=CatalogEntry(url,text,imageUrl=photo.ifBlank{old?.imageUrl.orEmpty()})
+                    }
+                }
+
+                if(j.optBoolean("lostCards"))failed++
+                if(products.size>=30000){failed++;finishSync("Достигнут лимит выгрузки",false);return@evaluateJavascript}
                 if(atRoot()){
                     if(rootSections.isEmpty()){finishSync("Не найдены основные категории каталога",false);return@evaluateJavascript}
                     enqueueRootSections()
@@ -288,7 +278,18 @@ class CatalogSyncActivity:Activity(){
                 }
                 next();return@evaluateJavascript
             }
-            val quietEnd=j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")
+            rounds++
+            if(pageState!=lastPageState||!quietEnd){
+                lastPageState=pageState;stableSince=now
+            }else if(stableSince==0L)stableSince=now
+            status.text="Категорий обработано: "+done+" · товаров сохранено: "+products.size+" · в очереди: "+queue.size+
+                "\n"+(if(j.optBoolean("loading"))"Ожидание подгрузки" else if(quietEnd)"Проверка конца категории" else "Быстрая прокрутка")+
+                " · карточек на странице: "+j.optInt("cardCount")+" · без изменений "+(idle/1000)+" с"
+            if(rounds>=2400){skipStalled("Превышен лимит проверок категории");return@evaluateJavascript}
+            if(quietEnd&&now-stableSince>=CatalogStallPolicy.END_STABLE_MS){
+                status.text="Категория прогружена по видимой выдаче. Сбор данных…"
+                read(g,true);return@evaluateJavascript
+            }
             when(CatalogStallPolicy.action(idle,recoveryStage,quietEnd)){
                 3->{recoverStalled("Каталог не меняется 20 секунд");return@evaluateJavascript}
                 2,1->{
@@ -298,16 +299,16 @@ class CatalogSyncActivity:Activity(){
                     val script=if(recoveryStage==1)advanceScript else retryScrollScript
                     web.evaluateJavascript(script){_ ->
                         if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
-                        clearCallbackWatchdog();reading=false;schedule(g,1000)
+                        clearCallbackWatchdog();reading=false;schedule(g,CatalogStallPolicy.POLL_MS)
                     }
                     return@evaluateJavascript
                 }
             }
-            if(j.optBoolean("loading")||quietEnd||(j.optBoolean("more")&&recoveryStage>0)){schedule(g,1000);return@evaluateJavascript}
+            if(j.optBoolean("loading")||quietEnd){schedule(g,CatalogStallPolicy.POLL_MS);return@evaluateJavascript}
             reading=true;watchCallback(g)
             web.evaluateJavascript(advanceScript){_ ->
                 if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
-                clearCallbackWatchdog();reading=false;schedule(g,1000)
+                clearCallbackWatchdog();reading=false;schedule(g,CatalogStallPolicy.POLL_MS)
             }
         }
     }
@@ -356,7 +357,7 @@ class CatalogSyncActivity:Activity(){
             const anchorSelector=isRootCatalog?'a[href*="/catalog/"]':'a[href*="/product/"]';
             const anchors=[...document.querySelectorAll(anchorSelector)];
             const scores=new Map();
-            for(const a of anchors.slice(0,250)){
+            for(const a of anchors.slice(0,32)){
               if(!a.getClientRects().length)continue;
               for(let p=a.parentElement;p&&p!==root&&p!==document.body&&p!==document.documentElement;p=p.parentElement){
                 const css=getComputedStyle(p);
@@ -375,11 +376,25 @@ class CatalogSyncActivity:Activity(){
               const r=x.getBoundingClientRect();return near(x)&&(scroll===root||scroll.contains(x))&&r.bottom>=viewport.bottom-Math.max(120,scroll.clientHeight*0.35);
             });
         """.trimIndent()
-        private val scanScript="""
+        private val probeScript=catalogScript(false)
+        private val scanScript=catalogScript(true)
+        private fun catalogScript(collect:Boolean)="""
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return '{}';
               let store='';try{store=String(JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}').selectedStore?.sapCode||'');}catch(e){}
               ${scrollHelpers}
+              const cards=document.querySelectorAll('a[href*="/product/"]');
+              const tracked=isRootCatalog?anchors:cards;
+              const first=tracked.length?tracked[0].href:'';
+              const last=tracked.length?tracked[tracked.length-1].href:'';
+              const pageState=tracked.length+'|'+scroll.scrollHeight+'|'+first+'|'+last;
+              // Track only anchor identity while loading, not prices or product data.
+              let state=window.__smartBasketLoadState;
+              if(!state||state.path!==location.pathname)state=window.__smartBasketLoadState={path:location.pathname,first:'',lost:false};
+              if(state.first&&![...tracked].some(a=>a.href===state.first))state.lost=true;
+              if(!state.first&&first)state.first=first;
+              const meta={store,cardCount:cards.length,more:bottom&&moreButtons.length===1,loading,pageState,scrollTop:Math.round(scroll.scrollTop),bottom,lostCards:state.lost};
+              if(!${collect})return JSON.stringify(meta);
               const categories=new Map(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
               for(const a of document.querySelectorAll('a[href]')){
                 if(!visible(a))continue;
@@ -390,8 +405,6 @@ class CatalogSyncActivity:Activity(){
                   if(title)categories.set(u.pathname+'|'+title,{url:u.origin+u.pathname,title});
                 }
                 if(!u.pathname.startsWith('/product/'))continue;
-                const rect=a.getBoundingClientRect();
-                if(rect.bottom < viewport.top-scroll.clientHeight || rect.top > viewport.bottom+scroll.clientHeight)continue;
                 let t=(a.innerText||'').trim();
                 if(!t.includes('₽')){
                   let p=a.parentElement;
@@ -412,9 +425,7 @@ class CatalogSyncActivity:Activity(){
                   products.set(u.pathname,{url:u.origin+u.pathname,text:t,image:img?.currentSrc||img?.src||''});
                 }
               }
-              const cards=document.querySelectorAll('a[href*="/product/"]');
-              const pageState=cards.length+'|'+scroll.scrollHeight+'|'+(cards.length?cards[cards.length-1].href:'');
-              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],cardCount:cards.length,more:bottom&&moreButtons.length===1,loading,pageState,scrollTop:Math.round(scroll.scrollTop),bottom});
+              return JSON.stringify({...meta,categories:[...categories.values()],products:[...products.values()]});
             })()
         """.trimIndent()
         private val retryScrollScript="""
@@ -422,10 +433,10 @@ class CatalogSyncActivity:Activity(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
               ${scrollHelpers}
               if(!bottom){
-                scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+Math.max(80,Math.floor(scroll.clientHeight*0.75)));
+                scroll.scrollTop=scroll.scrollHeight;
                 return true;
               }
-              if(moreButtons.length===1&&!loading){moreButtons[0].click();return true;}
+              if(moreButtons.length===1&&!loading){const now=Date.now();if(now-(window.__smartBasketMoreAt||0)>=1000){window.__smartBasketMoreAt=now;moreButtons[0].click();}return true;}
               const position=scroll.scrollTop, page=location.href;
               if(position>0){
                 scroll.scrollTop=Math.max(0,position-Math.max(40,Math.floor(scroll.clientHeight*0.25)));
@@ -438,10 +449,9 @@ class CatalogSyncActivity:Activity(){
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
               ${scrollHelpers}
-              if(moreButtons.length===1&&bottom&&!loading){moreButtons[0].click();return true;}
+              if(moreButtons.length===1&&bottom&&!loading){const now=Date.now();if(now-(window.__smartBasketMoreAt||0)>=1000){window.__smartBasketMoreAt=now;moreButtons[0].click();}return true;}
               if(!bottom){
-                const step=Math.max(80,Math.floor(scroll.clientHeight*0.75));
-                scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+step);
+                scroll.scrollTop=scroll.scrollHeight;
               }
               return true;
             })()
