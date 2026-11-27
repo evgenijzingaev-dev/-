@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private var promptDraft = ""
     private val memory by lazy{AssistantMemory(this)}
     private val family by lazy{FamilyProfiles(this)}
+    private val familyWeek by lazy{FamilyWeek(this)}
     private val dishStore by lazy{GeneratedDishStore(this)}
     private var draftDishes=emptyList<GeneratedDish>()
     private val assistantHistory=mutableListOf<AssistantMessage>()
@@ -193,7 +194,14 @@ class MainActivity : Activity() {
         params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
-        addButton(hero,"Меню семьи на неделю"){if(!assistantBusy){if(!family.sharing()||family.read().isEmpty())familyDialog() else {promptDraft="Составь меню на 7 дней для всей семьи: завтрак, обед и ужин, индивидуальные порции, КБЖУ взрослых, учти запасы и бюджет. Подготовь общую корзину покупок.";if(chatConnection.connected())askAssistant() else openChatGptSettings()}}}
+        addButton(hero,"Меню семьи на неделю"){
+            if(!assistantBusy){
+                if(promptDraft.isNotBlank())toast("Сначала отправь или очисти текущий запрос")
+                else if(!family.sharing()||family.read().isEmpty())familyDialog()
+                else {promptDraft="Составь меню на 7 дней для всей семьи: завтрак, обед и ужин, индивидуальные порции, КБЖУ взрослых, учти запасы и бюджет. Подготовь общую корзину покупок.";if(chatConnection.connected())askAssistant() else openChatGptSettings()}
+            }
+        }
+        if(familyWeek.read().isNotEmpty())hero.addView(link("Сохранённое меню на неделю  ›"){showFamilyWeek(familyWeek.read(),false){}})
         hero.addView(link("Моя семья · "+family.read().size+" чел.  ›"){if(!assistantBusy)familyDialog()})
         addButton(hero,"Рекомендации для семьи на сегодня"){
             if(!assistantBusy){
@@ -248,11 +256,13 @@ class MainActivity : Activity() {
         val preferences=memory.preferences();val targetDays=days;val people=portions;val target=calorieTarget
         val previous=items.toList();val limit=budget;val shipping=delivery
         val familyContext=family.sharedContext()
+        val memberIds=if(family.sharing())family.read().map{it.id} else emptyList()
         assistantBusy=true;render()
         Thread{
             try{
-                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target,familyContext)
+                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target,familyContext,memberIds)
                 val answer=engine.ask(history,prompt)
+                val week=engine.weekProposal
                 runOnUiThread{
                     if(!isFinishing&&!isDestroyed){
                         rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text))
@@ -260,14 +270,15 @@ class MainActivity : Activity() {
                         if (promptDraft.trim() == prompt) promptDraft = ""
                         assistantBusy=false;render()
                         val showBasket={answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)};Unit}
+                        val showPlan={if(week!=null && family.sharing() && family.read().map{it.id}==memberIds)showFamilyWeek(week,true,showBasket) else showBasket()}
                         if(answer.preferenceProposal!=null&&answer.preferenceProposal!=preferences){
                             val proposed=answer.preferenceProposal
                             AlertDialog.Builder(this).setTitle("Обновить память предпочтений?")
                                 .setMessage(if(proposed.isBlank())"Очистить сохранённые предпочтения?" else proposed)
                                 .setNegativeButton("Нет"){_,_->rememberMessage(AssistantMessage("assistant","Приложение: изменение памяти отклонено."))}
                                 .setPositiveButton("Сохранить"){_,_->if(memory.preferences()==preferences){memory.savePreferences(proposed);rememberMessage(AssistantMessage("assistant","Приложение: предпочтения сохранены."))}}
-                                .create().apply{setOnDismissListener{render();showBasket()};show()}
-                        }else showBasket()
+                                .create().apply{setOnDismissListener{render();showPlan()};show()}
+                        }else showPlan()
                     }
                 }
             }catch(e:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
@@ -302,12 +313,37 @@ class MainActivity : Activity() {
                 else{items=proposed;currentPlan=null;rememberMessage(AssistantMessage("assistant","Приложение: пользователь подтвердил замену корзины."));tab=0;update()}
             }.show()
     }
+    private fun showFamilyWeek(meals:List<WeekMeal>,proposal:Boolean,onDone:()->Unit){
+        val members=family.read().associateBy{it.id}
+        val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
+        val days=listOf("Понедельник","Вторник","Среда","Четверг","Пятница","Суббота","Воскресенье")
+        val slots=listOf("Завтрак","Обед","Ужин")
+        panel.addView(label("Порции готовых блюд ориентировочные. Для детей учитывай аппетит и безопасную текстуру.",14f,gray))
+        for(day in 0..6){
+            panel.addView(label(days[day],18f,ink,true))
+            meals.filter{it.day==day}.sortedBy{it.slot}.forEach{meal->
+                panel.addView(label(slots[meal.slot]+": "+meal.name,16f,ink,true))
+                panel.addView(label(meal.portions.entries.joinToString(" · "){(id,grams)->(members[id]?.name?:"Удалённый профиль")+" — "+grams+" г"},14f,gray))
+            }
+        }
+        val builder=AlertDialog.Builder(this).setTitle(if(proposal)"Проверить меню на неделю" else "Меню на неделю")
+            .setView(ScrollView(this).apply{addView(panel)})
+        if(proposal)builder.setNegativeButton("Не сохранять",null).setPositiveButton("Сохранить"){_,_->
+            val current=family.read().map{it.id}.toSet()
+            if(meals.all{it.portions.keys==current}){familyWeek.save(meals);render();toast("Меню сохранено")}
+            else toast("Состав семьи изменился. Создай меню заново.")
+        }else builder.setPositiveButton("Закрыть",null).setNeutralButton("Удалить"){_,_->familyWeek.save(emptyList());render()}
+        builder.create().apply{setOnDismissListener{onDone()};show()}
+    }
     private fun familyDialog(){
         val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
         val members=family.read()
-        panel.addView(label("Профили хранятся на устройстве. При включении передачи возраст, рост, вес, пол, активность, цели, ограничения и записи дневника без имени передаются OpenAI при запросах. Указывай только данные, которыми вправе делиться.",14f,gray))
+        panel.addView(label("Профили хранятся на устройстве. При включении передачи возраст, рост, вес, пол, активность, цели, ограничения и записи дневника без имени передаются OpenAI при запросах. Указывай только данные, которыми вправе делиться. При отключении передачи локальная история диалога очищается, чтобы старые ответы не отправлялись снова.",14f,gray))
         val share=CheckBox(this).apply{ text="Учитывать семейные данные в ChatGPT";isChecked=family.sharing()
-            setOnCheckedChangeListener{_,checked->family.setSharing(checked)} }
+            setOnCheckedChangeListener{_,checked->
+                family.setSharing(checked)
+                if(!checked){assistantHistory.clear();memory.clearHistory();draftDishes=emptyList();toast("Передача отключена. Локальный диалог очищен.");render()}
+            } }
         panel.addView(share)
         panel.addView(CheckBox(this).apply{
             text="Автоматически запрашивать рекомендации при открытии (раз в день, расходует лимит ChatGPT)"
