@@ -134,7 +134,7 @@ class StoreActivity : Activity() {
         if(attempted||web.url!=c.url||!product(Uri.parse(c.url)))return
         if(c.offer.conditional){Toast.makeText(this,"Проверь условия акции и добавь товар вручную.",Toast.LENGTH_LONG).show();return}
         if(c.offer.total(need)>room){Toast.makeText(this,"Все нужные упаковки превышают остаток бюджета.",Toast.LENGTH_LONG).show();return}
-        val message="Добавить одну упаковку на текущей странице? Нужно ${c.offer.packages(need)} уп., расчёт ${rub(c.offer.total(need))}. Сайт может изменить цену. "+if(unknown>0)"У других $unknown позиций нет подтверждённой цены. Бюджет пока не гарантирован."else"Сверь итог с магазином."
+        val message="Добавить одну упаковку на текущей странице? Нужно ${c.offer.packages(need)} уп., расчёт ${rub(c.offer.total(need))}. Сайт может изменить цену. " + (if (unknown > 0) "У других $unknown позиций нет подтверждённой цены. Бюджет пока не гарантирован." else "Сверь итог с магазином.")
         AlertDialog.Builder(this).setTitle("Добавление в корзину").setMessage(message).setNegativeButton("Отмена",null).setPositiveButton("Добавить 1"){_,_->
             if(attempted||web.url!=c.url)return@setPositiveButton
             attempted=true;add.isEnabled=false
