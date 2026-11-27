@@ -4,14 +4,15 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class FamilyMember(val name:String,val age:Int,val height:Int?,val weight:Double?,val activity:String,val goal:String,val tastes:String,val restrictions:String,val id:String=java.util.UUID.randomUUID().toString()){
+data class FamilyMember(val name:String,val age:Int,val height:Int?,val weight:Double?,val activity:String,val goal:String,val tastes:String,val restrictions:String,val id:String=java.util.UUID.randomUUID().toString(),val sex:String="",val activityLevel:String=""){
     fun valid()=name.isNotBlank() && name.length<=60 && age in 0..120 &&
         (height==null || height in 30..250) && (weight==null || weight.isFinite() && weight in 1.0..350.0) &&
         activity.length<=100 && goal.length<=100 && tastes.length<=500 && restrictions.length<=500
+    fun maintenance()=FamilyNutrition.maintenance(age,height,weight,sex,activityLevel)
     fun json()=JSONObject().put("name",name).put("id",id).put("age",age).put("height_cm",height?:JSONObject.NULL)
         .put("weight_kg",weight?:JSONObject.NULL).put("activity",activity)
         .put("goal",if(age<18)"Возрастное питание без дефицита калорий" else goal)
-        .put("preferences",tastes).put("restrictions",restrictions)
+        .put("sex",sex).put("activity_level",activityLevel).put("maintenance_kcal_estimate",maintenance()?:JSONObject.NULL).put("preferences",tastes).put("restrictions",restrictions)
 }
 class FamilyProfiles(context:Context){
     private val prefs=context.getSharedPreferences("family_profiles",Context.MODE_PRIVATE)
@@ -21,7 +22,7 @@ class FamilyProfiles(context:Context){
             val o=a.getJSONObject(i)
             FamilyMember(o.getString("name"),o.getInt("age"),if(o.isNull("height_cm"))null else o.getInt("height_cm"),
                 if(o.isNull("weight_kg"))null else o.getDouble("weight_kg"),o.optString("activity"),o.optString("goal"),
-                o.optString("preferences"),o.optString("restrictions"),o.optString("id","legacy-"+i)).takeIf{it.valid()}
+                o.optString("preferences"),o.optString("restrictions"),o.optString("id","legacy-"+i),o.optString("sex"),o.optString("activity_level")).takeIf{it.valid()}
         }.take(12)
     }catch(_:Exception){emptyList()}
     fun save(members:List<FamilyMember>){
