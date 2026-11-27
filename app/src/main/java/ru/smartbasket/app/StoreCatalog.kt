@@ -33,6 +33,8 @@ val catalogScript = """
               for(var a of document.querySelectorAll('a[href]')){
                 var u=new URL(a.href,location.href);
                 if(u.origin!==location.origin||!u.pathname.startsWith('/product/')||seen.has(u.pathname)||a.getClientRects().length===0)continue;
+                var rect=a.getBoundingClientRect();
+                if(rect.bottom < -window.innerHeight || rect.top > window.innerHeight*2)continue;
                 var t=(a.innerText||'').trim();
                 if(!/цена/i.test(t)||!t.includes('₽')){
                   var p=a.parentElement;
@@ -43,7 +45,7 @@ val catalogScript = """
                   }
                 }
                 if(!/цена/i.test(t)||!t.includes('₽')||t.length>1000)continue;
-                seen.add(u.pathname);found.push({url:u.origin+u.pathname,text:t});if(found.length>=100)break;
+                seen.add(u.pathname);found.push({url:u.origin+u.pathname,text:t});
               }
               return JSON.stringify(found);
             })()
