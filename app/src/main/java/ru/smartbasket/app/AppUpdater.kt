@@ -83,6 +83,7 @@ class AppUpdater(private val a:Activity){
         val now=System.currentTimeMillis()
         if(!manual&&now-pref.getLong("checked",0L) in 0 until 6*60*60*1000L)return
         busy=true
+        if(manual)toast("Проверяем наличие обновления…")
         Thread{
             try{
                 val c=open("https://api.github.com/repos/evgenijzingaev-dev/-/releases/latest",false)
@@ -99,7 +100,7 @@ class AppUpdater(private val a:Activity){
                     if(release==null){if(manual)toast("Установлена последняя версия")}
                     else AlertDialog.Builder(a).setTitle("Доступно обновление "+release.version)
                         .setMessage("Скачать APK напрямую из GitHub и установить поверх приложения? Корзина сохранится при совпадении подписи.")
-                        .setNegativeButton("Позже",null).setPositiveButton("Обновить"){_,_->download(release)}.show()
+                        .setNegativeButton("Позже",null).setPositiveButton("Скачать обновление"){_,_->download(release)}.show()
                 }
             }catch(e:Exception){a.runOnUiThread{busy=false;if(manual)toast("Проверка недоступна: "+(e.message?:"ошибка сети"))}}
         }.start()
