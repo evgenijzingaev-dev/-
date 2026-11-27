@@ -308,6 +308,11 @@ class MainActivity : Activity() {
         val share=CheckBox(this).apply{ text="Учитывать семейные данные в ChatGPT";isChecked=family.sharing()
             setOnCheckedChangeListener{_,checked->family.setSharing(checked)} }
         panel.addView(share)
+        panel.addView(CheckBox(this).apply{
+            text="Автоматически запрашивать рекомендации при открытии (раз в день, расходует лимит ChatGPT)"
+            isChecked=prefs.getBoolean("family_auto",false)
+            setOnCheckedChangeListener{_,checked->prefs.edit().putBoolean("family_auto",checked).apply()}
+        })
         val d=AlertDialog.Builder(this).setTitle("Моя семья").setView(ScrollView(this).apply{addView(panel)}).setPositiveButton("Закрыть",null).create()
         members.forEachIndexed{i,m->panel.addView(link(m.name+" · "+m.age+" лет  ›"){d.dismiss();editFamily(i)})}
         if(members.size<12)addButton(panel,"Добавить члена семьи"){d.dismiss();editFamily(null)}
@@ -767,6 +772,17 @@ class MainActivity : Activity() {
             else nextGuided()
         }
     }
-    override fun onResume(){super.onResume();updater.resumeInstall()}
+    override fun onResume(){
+        super.onResume();updater.resumeInstall()
+        if(tab==3 && !assistantBusy && promptDraft.isBlank() && family.sharing() && family.read().isNotEmpty() &&
+            prefs.getBoolean("family_auto",false) && chatConnection.connected()){
+            val today=java.time.LocalDate.now().toString()
+            if(prefs.getString("family_auto_day","")!=today){
+                prefs.edit().putString("family_auto_day",today).apply()
+                promptDraft="Предложи сегодня семейное меню и подходящие продукты, учитывая индивидуальные порции, возраст, ограничения, бюджет и запасы. Не меняй корзину без запроса."
+                askAssistant()
+            }
+        }
+    }
     private fun toast(s:String){Toast.makeText(this,s,Toast.LENGTH_SHORT).show()}
 }
