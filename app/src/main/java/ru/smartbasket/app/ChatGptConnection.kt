@@ -26,8 +26,10 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.net.ssl.HttpsURLConnection
 
-/** First-stage local personal-project integration using the documented Sign in with ChatGPT flow. */
+/** Local personal-project integration using the documented Sign in with ChatGPT flow. */
+private class OpenAiHttpException(val status:Int,val oauthCode:String=""):IllegalStateException("OpenAI HTTP "+status)
 class ChatGptConnection(context:Context){
+    companion object{private val sessionLock=Any()}
     private val prefs=context.applicationContext.getSharedPreferences("chatgpt_connection",Context.MODE_PRIVATE)
     private val random=SecureRandom()
     private val auth="https://auth.openai.com"
@@ -56,10 +58,31 @@ class ChatGptConnection(context:Context){
         return c.doFinal(decode(p[1])).toString(Charsets.UTF_8)
     }
     private fun session():JSONObject?=try{JSONObject(unseal(prefs.getString("session","").orEmpty()))}catch(_:Exception){null}
-    fun connected():Boolean=session()?.let{it.optLong("expires")>System.currentTimeMillis()+30000&&it.optString("scope").split(' ').contains("chatgpt.tokens.use.direct")}==true
-    fun disconnect(){prefs.edit().remove("session").remove("client").remove("subject").apply()}
-    private fun request(url:String,body:String?=null,contentType:String="application/json",token:String?=null):HttpsURLConnection{
-        require(url in setOf(auth+"/api/accounts/oauth/token",auth+"/.well-known/jwks.json",api+"/models",api+"/responses"))
+    fun connected():Boolean=session()?.let{ChatGptSessionPolicy.usable(it,System.currentTimeMillis())||ChatGptSessionPolicy.renewable(it)}==true
+    fun accountLabel():String=session()?.optString("email").orEmpty()
+    fun disconnect():Boolean=synchronized(sessionLock){
+        val current=session()
+        val refresh=current?.optString("refresh").orEmpty()
+        val client=prefs.getString("client",null).orEmpty()
+        var revoked=false
+        try{
+            if(refresh.isNotBlank()&&client.startsWith("oaiapp_")){
+                val endpoint=json(auth+"/.well-known/openid-configuration").getString("revocation_endpoint")
+                val u=java.net.URI(endpoint)
+                require(u.scheme=="https"&&u.host=="auth.openai.com"&&u.userInfo==null&&u.port in listOf(-1,443)&&u.query==null&&u.fragment==null)
+                for(attempt in 0..1){
+                    try{
+                        val connection=request(endpoint,form(mapOf("token" to refresh,"token_type_hint" to "refresh_token","client_id" to client)),"application/x-www-form-urlencoded",revocationEndpoint=endpoint)
+                        try{revoked=connection.responseCode==200}finally{connection.disconnect()}
+                        break
+                    }catch(e:Exception){if(attempt==0&&(e is java.io.IOException||e is OpenAiHttpException&&e.status>=500))Thread.sleep(500)else break}
+                }
+            }
+        }catch(_:Exception){}finally{prefs.edit().remove("session").commit()}
+        revoked
+    }
+    private fun request(url:String,body:String?=null,contentType:String="application/json",token:String?=null,revocationEndpoint:String?=null):HttpsURLConnection{
+        require(url in setOf(auth+"/api/accounts/oauth/token",auth+"/.well-known/jwks.json",auth+"/.well-known/openid-configuration",api+"/models",api+"/responses")||revocationEndpoint!=null&&url==revocationEndpoint)
         val c=URL(url).openConnection() as HttpsURLConnection
         c.instanceFollowRedirects=false;c.connectTimeout=15000;c.readTimeout=90000
         c.setRequestProperty("Accept",if(url.endsWith("/responses"))"text/event-stream" else "application/json")
@@ -69,7 +92,13 @@ class ChatGptConnection(context:Context){
             c.outputStream.use{it.write(body.toByteArray(Charsets.UTF_8))}
         }
         val code=c.responseCode
-        if(code !in 200..299){c.disconnect();throw IllegalStateException("OpenAI HTTP "+code)}
+        if(code !in 200..299){
+            val oauthCode=if(url==auth+"/api/accounts/oauth/token")try{
+                val reader=c.errorStream?.bufferedReader()
+                reader?.use{r->val buf=CharArray(4096);val count=r.read(buf);if(count>0)JSONObject(String(buf,0,count)).optString("error")else ""}.orEmpty()
+            }catch(_:Exception){""}else ""
+            c.disconnect();throw OpenAiHttpException(code,oauthCode)
+        }
         return c
     }
     private fun json(url:String,body:String?=null,contentType:String="application/json",token:String?=null):JSONObject{
@@ -104,7 +133,7 @@ class ChatGptConnection(context:Context){
         return claims
     }
     /** Blocking; invoke on worker thread. Browser callback is restricted to IPv4 loopback. */
-    fun signIn(openBrowser:(String)->Unit){
+    fun signIn(openBrowser:(String)->Unit)=synchronized(sessionLock){
         val verifier=randomValue();val state=randomValue();val nonce=randomValue()
         val host=prefs.getString("host",null)?:("urn:uuid:"+UUID.randomUUID()).also{prefs.edit().putString("host",it).commit()}
         val existing=prefs.getString("client",null)
@@ -117,6 +146,7 @@ class ChatGptConnection(context:Context){
                 "state" to state,"nonce" to nonce,"code_challenge_method" to "S256",
                 "code_challenge" to encode(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII))))
             if(existing==null)fields["agent_name_hint"]="SmartBasket"
+            else session()?.optString("id_token")?.takeIf{it.isNotBlank()}?.let{fields["id_token_hint"]=it}
             openBrowser(auth+"/api/accounts/authorize?"+form(fields))
             val deadline=android.os.SystemClock.elapsedRealtime()+180000
             var callback:Uri?=null
@@ -149,8 +179,9 @@ class ChatGptConnection(context:Context){
             require(previousSubject==null||previousSubject==identity.getString("sub")){"Выбран другой аккаунт. Сначала отключи предыдущий."}
             require(tok.optString("scope").split(' ').contains("chatgpt.tokens.use.direct")){"Не разрешено использование плана ChatGPT"}
             require(tok.optString("token_type").equals("Bearer",true)&&tok.optLong("expires_in") in 1..86400)
-            val saved=JSONObject().put("access",tok.getString("access_token")).put("scope",tok.getString("scope"))
-                .put("expires",System.currentTimeMillis()+tok.getLong("expires_in")*1000)
+            val saved=ChatGptSessionPolicy.replacement(tok,null,System.currentTimeMillis())
+                .put("id_token",tok.getString("id_token")).put("email",identity.optString("email"))
+                .put("subject",identity.getString("sub")).put("client",issued)
             require(prefs.edit().putString("client",issued).putString("subject",identity.getString("sub")).putString("session",seal(saved.toString())).commit()){"Не удалось сохранить подключение"}
         }
     }
@@ -159,9 +190,29 @@ class ChatGptConnection(context:Context){
         val a=json(api+"/models",token=token).getJSONArray("models")
         return (0 until a.length()).map{a.getJSONObject(it)}.filter{it.optString("visibility")=="list"}.map{it.getString("slug") to it.optString("display_name",it.getString("slug"))}
     }
-    private fun access():String{
-        require(connected()){"Срок входа истёк. Подключи ChatGPT снова."}
-        return session()!!.getString("access")
+    private fun access():String=synchronized(sessionLock){
+        val current=session()?:error("Подключи ChatGPT снова.")
+        if(ChatGptSessionPolicy.usable(current,System.currentTimeMillis()))return@synchronized current.getString("access")
+        require(ChatGptSessionPolicy.renewable(current)){"Срок входа истёк. Подключи ChatGPT снова."}
+        val client=prefs.getString("client",null).orEmpty()
+        require(client.startsWith("oaiapp_")&&current.optString("client")==client&&current.optString("subject")==prefs.getString("subject",null)){"Не совпадает регистрация ChatGPT"}
+        val response=try{
+            json(auth+"/api/accounts/oauth/token",form(mapOf("grant_type" to "refresh_token","client_id" to client,
+                "refresh_token" to current.getString("refresh"),"resource" to api)),"application/x-www-form-urlencoded")
+        }catch(e:OpenAiHttpException){
+            if(e.oauthCode in listOf("invalid_grant","invalid_client","invalid_scope","unauthorized_client")){
+                prefs.edit().remove("session").commit()
+                error("Разрешение ChatGPT истекло или отозвано. Войди снова.")
+            }
+            throw e
+        }
+        val next=try{ChatGptSessionPolicy.replacement(response,current,System.currentTimeMillis())}catch(e:Exception){
+            prefs.edit().remove("session").commit();throw e
+        }
+        // Keep the original verified identity and ID-token hint. Never treat a refresh as a new sign-in.
+        for(k in listOf("id_token","email","subject","client"))next.put(k,current.optString(k))
+        require(prefs.edit().putString("session",seal(next.toString())).commit()){"Не удалось сохранить обновлённый сеанс"}
+        next.getString("access")
     }
     fun test(model:String):String{
         val token=access()

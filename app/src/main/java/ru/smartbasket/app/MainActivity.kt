@@ -279,7 +279,7 @@ class MainActivity : Activity() {
         addButton(panel,"Установить скачанное обновление"){dlg.dismiss();updater.installDownloaded()}
         addButton(panel,"Бюджет и доставка"){dlg.dismiss();budgetDialog()}
         addButton(panel,"Память и предпочтения"){dlg.dismiss();if(!assistantBusy)memoryDialog()else toast("Дождись ответа ChatGPT")}
-        addButton(panel,"Подключение ChatGPT"){dlg.dismiss();startActivity(Intent(this,ChatGptSettingsActivity::class.java))}
+        addButton(panel,"Подключение ChatGPT"){dlg.dismiss();if(!assistantBusy)startActivity(Intent(this,ChatGptSettingsActivity::class.java))else toast("Дождись ответа ChatGPT")}
         dlg.show()
     }
     private fun planSettings(){

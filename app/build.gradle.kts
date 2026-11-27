@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "ru.smartbasket.app"
     compileSdk = 34
-    defaultConfig { applicationId = "ru.smartbasket.app"; minSdk = 26; targetSdk = 34; versionCode = 20; versionName = "0.10.2" }
+    defaultConfig { applicationId = "ru.smartbasket.app"; minSdk = 26; targetSdk = 34; versionCode = 21; versionName = "0.11.0" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
