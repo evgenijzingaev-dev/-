@@ -18,4 +18,24 @@ class BasketProposalTest {
     @Test(expected=IllegalArgumentException::class) fun rejectsFraction(){
         proposeBasket(JSONObject("""{"items":[{"name":"Рис","amount":1.5,"unit":"г"}]}"""),emptyList(),null,1000)
     }
+
+    @Test fun previewsSelectedPackagesAndNutritionForRecipeQuantity() {
+        val url = "https://5ka.ru/product/moloko/"
+        val snapshot = CatalogSnapshot("store", 1000, 1, 0, listOf(
+            CatalogEntry(url, "Молоко 930 мл Цена 99 99 ₽")
+        ))
+        val args = JSONObject("""{"items":[{"name":"Молоко","amount":1000,"unit":"мл"},{"name":"Кумкват","amount":150,"unit":"г"}]}""")
+        val items = proposeBasket(args, emptyList(), snapshot, 1001).items
+        val milk = proposalItemLabel(items.first()) { selected ->
+            assertEquals(url, selected)
+            ProductNutrition(Nutrition(50.0, 3.0, 2.0, 5.0), "мл")
+        }
+        assertTrue(milk.contains("Молоко 930 мл"))
+        assertTrue(milk.contains("2 уп. × 99,99 ₽ = 199,98 ₽"))
+        assertTrue(milk.contains("500 ккал · Б 30,0 · Ж 20,0 · У 50,0 г"))
+        val missing = proposalItemLabel(items.last()) { error("No product selected") }
+        assertTrue(missing.contains("цена неизвестна"))
+        assertTrue(missing.contains("КБЖУ на 150 г: нет данных"))
+        assertTrue(proposalItemLabel(items.first()) { null }.contains("оценка · "))
+    }
 }

@@ -29,3 +29,22 @@ internal fun proposeBasket(args:JSONObject,previous:List<BasketItem>,snapshot:Ca
     }
     return BasketProposal(proposed,fresh?.updated)
 }
+
+internal fun proposalItemLabel(item: BasketItem, lookup: (String) -> ProductNutrition?): String {
+    val product = item.storeUrl.takeIf { it.isNotBlank() }?.let(lookup)
+    val line = nutritionLine(item.name, item.amount.toDouble(), item.unit, product)
+    return buildString {
+        append("${item.name} — ${item.amount} ${item.unit}")
+        if (item.storeName.isNotBlank()) append("\n${item.storeName}")
+        append("\nК покупке: ")
+        if (item.need == 0L) append("всё есть дома")
+        else if (item.cost == null) append("цена неизвестна")
+        else append("${item.packs} уп. × ${rub(requireNotNull(item.price))} = ${rub(requireNotNull(item.cost))}")
+        append("\nКБЖУ на ${item.amount} ${item.unit}: ")
+        if (line.total == null) append("нет данных")
+        else {
+            if (line.estimated) append("оценка · ")
+            append(line.total.label())
+        }
+    }
+}
