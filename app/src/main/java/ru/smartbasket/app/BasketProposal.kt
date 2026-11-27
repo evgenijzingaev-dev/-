@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class BasketProposal(val items:List<BasketItem>,val catalogUpdated:Long?)
-data class AssistantResult(val text:String,val proposal:BasketProposal?)
+data class AssistantResult(val text:String,val proposal:BasketProposal?,val preferenceProposal:String?=null)
 
 internal fun proposeBasket(args:JSONObject,previous:List<BasketItem>,snapshot:CatalogSnapshot?,now:Long):BasketProposal {
     val rows=args.getJSONArray("items")

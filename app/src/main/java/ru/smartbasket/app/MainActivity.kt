@@ -35,7 +35,13 @@ class MainActivity : Activity() {
     private var days = 3
     private var calorieTarget:Int? = null
     private var promptDraft = ""
+    private val memory by lazy{AssistantMemory(this)}
     private val assistantHistory=mutableListOf<AssistantMessage>()
+    private fun rememberMessage(message:AssistantMessage){
+        assistantHistory.add(message)
+        while(assistantHistory.size>24)assistantHistory.removeAt(0)
+        memory.saveHistory(assistantHistory)
+    }
     private var assistantBusy=false
     private var currentPlan: MealPlan? = null
     private var guided = false
@@ -44,7 +50,7 @@ class MainActivity : Activity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density + .5f).toInt()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        load(); render(); acceptIntent(intent)
+        load(); assistantHistory.addAll(memory.history()); render(); acceptIntent(intent)
         updater.check(false)
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); acceptIntent(intent) }
@@ -59,6 +65,8 @@ class MainActivity : Activity() {
         budget = prefs.getLong("budget",300000).coerceIn(0,100_000_000)
         delivery = prefs.getLong("delivery",0).coerceIn(0,100_000_000)
         portions = prefs.getInt("portions",3).coerceIn(1,100)
+        days=prefs.getInt("days",3).coerceIn(1,14)
+        calorieTarget=prefs.getInt("calorie_target",0).takeIf{it in 100..6000}
         try {
             val arr = JSONArray(prefs.getString("items","[]"))
             items = (0 until arr.length()).map { n ->
@@ -70,7 +78,7 @@ class MainActivity : Activity() {
     private fun save() {
         val a=JSONArray()
         for (i in items) a.put(JSONObject().put("name",i.name).put("amount",i.amount).put("unit",i.unit).put("home",i.atHome).put("pack",i.pack).put("price",i.price ?: JSONObject.NULL).put("checked",i.checked).put("storeUrl",i.storeUrl).put("storeName",i.storeName))
-        prefs.edit().putLong("budget",budget).putLong("delivery",delivery).putInt("portions",portions).putString("items",a.toString()).apply()
+        prefs.edit().putLong("budget",budget).putLong("delivery",delivery).putInt("portions",portions).putInt("days",days).putInt("calorie_target",calorieTarget?:0).putString("items",a.toString()).apply()
     }
     private fun update() { save(); render() }
     private fun rounded(color: Int, radius: Int = 18): GradientDrawable = GradientDrawable().apply { setColor(color); cornerRadius=dp(radius).toFloat() }
@@ -168,7 +176,8 @@ class MainActivity : Activity() {
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
         addButton(hero,if(assistantBusy)"ChatGPT думает…" else "Спросить ChatGPT",true){askAssistant()}
-        addButton(hero,"Новый диалог"){if(!assistantBusy){assistantHistory.clear();render()}}
+        addButton(hero,"Новый диалог"){if(!assistantBusy){assistantHistory.clear();memory.clearHistory();render()}}
+        hero.addView(link("Мои предпочтения  ›"){if(!assistantBusy)memoryDialog()})
         addButton(hero,"Локальный подбор (без ChatGPT)") {
             try {
                 val parsed=parseRequest(promptDraft,days,portions.coerceAtMost(20),budget)
@@ -202,18 +211,26 @@ class MainActivity : Activity() {
             return
         }
         val history=assistantHistory.toList()
+        val preferences=memory.preferences();val targetDays=days;val people=portions;val target=calorieTarget
         val previous=items.toList();val limit=budget;val shipping=delivery
         assistantBusy=true;promptDraft="";render()
         Thread{
             try{
-                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get)
+                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target)
                 val answer=engine.ask(history,prompt)
                 runOnUiThread{
                     if(!isFinishing&&!isDestroyed){
-                        assistantHistory.add(AssistantMessage("user",prompt));assistantHistory.add(AssistantMessage("assistant",answer.text))
-                        while(assistantHistory.size>12)assistantHistory.removeAt(0)
+                        rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text))
                         assistantBusy=false;render()
-                        answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)}
+                        val showBasket={answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)};Unit}
+                        if(answer.preferenceProposal!=null&&answer.preferenceProposal!=preferences){
+                            val proposed=answer.preferenceProposal
+                            AlertDialog.Builder(this).setTitle("Обновить память предпочтений?")
+                                .setMessage(if(proposed.isBlank())"Очистить сохранённые предпочтения?" else proposed)
+                                .setNegativeButton("Нет"){_,_->rememberMessage(AssistantMessage("assistant","Приложение: изменение памяти отклонено."))}
+                                .setPositiveButton("Сохранить"){_,_->if(memory.preferences()==preferences){memory.savePreferences(proposed);rememberMessage(AssistantMessage("assistant","Приложение: предпочтения сохранены."))}}
+                                .create().apply{setOnDismissListener{render();showBasket()};show()}
+                        }else showBasket()
                     }
                 }
             }catch(_:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
@@ -230,12 +247,23 @@ class MainActivity : Activity() {
         val warning=if(s.over)"\nПревышен текущий бюджет." else if(!s.complete)"\nБюджет не подтверждён." else ""
         AlertDialog.Builder(this).setTitle("Предложение ChatGPT")
             .setMessage(summary+warning+"\nБюджет: "+rub(limit)+"\nЦены предварительные.\n\n"+rows+"\n\nЗаменить текущий список? Заказ не оформляется.")
-            .setNegativeButton("Отклонить"){_,_->assistantHistory.add(AssistantMessage("assistant","Приложение: пользователь отклонил предложение, корзина не изменена."));render()}
+            .setNegativeButton("Отклонить"){_,_->rememberMessage(AssistantMessage("assistant","Приложение: пользователь отклонил предложение, корзина не изменена."));render()}
             .setPositiveButton("Применить"){_,_->
                 if(items!=previous||budget!=limit||delivery!=shipping){toast("Условия изменились. Повтори запрос.")}
                 else if(proposal.catalogUpdated?.let{System.currentTimeMillis()-it !in 0L..21_600_000L}==true){toast("Цены устарели. Повтори запрос.")}
-                else{items=proposed;currentPlan=null;assistantHistory.add(AssistantMessage("assistant","Приложение: пользователь подтвердил замену корзины."));tab=0;update()}
+                else{items=proposed;currentPlan=null;rememberMessage(AssistantMessage("assistant","Приложение: пользователь подтвердил замену корзины."));tab=0;update()}
             }.show()
+    }
+    private fun memoryDialog(){
+        val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
+        panel.addView(label("Предпочтения, ограничения, любимые продукты. Хранятся на устройстве и передаются OpenAI при запросе. Не вводи секреты.",14f,gray))
+        val edit=EditText(this).apply{setText(memory.preferences());minLines=4;maxLines=8;gravity=Gravity.TOP;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE;filters=arrayOf(android.text.InputFilter.LengthFilter(4000))}
+        panel.addView(edit)
+        AlertDialog.Builder(this).setTitle("Память SmartBasket").setView(panel).setNegativeButton("Отмена",null)
+            .setNeutralButton("Очистить всё"){_,_->AlertDialog.Builder(this).setTitle("Удалить локальную память и историю?")
+                .setMessage("Корзина и каталог сохранятся. Это не удаляет данные из аккаунта ChatGPT.")
+                .setNegativeButton("Нет",null).setPositiveButton("Удалить"){_,_->memory.clearAll();assistantHistory.clear();render()}.show()}
+            .setPositiveButton("Сохранить"){_,_->memory.savePreferences(edit.text.toString());render()}.show()
     }
     private fun appSettings(){
         val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
@@ -244,6 +272,7 @@ class MainActivity : Activity() {
         addButton(panel,"Проверить обновление",true){dlg.dismiss();updater.check(true)}
         addButton(panel,"Установить скачанное обновление"){dlg.dismiss();updater.installDownloaded()}
         addButton(panel,"Бюджет и доставка"){dlg.dismiss();budgetDialog()}
+        addButton(panel,"Память и предпочтения"){dlg.dismiss();if(!assistantBusy)memoryDialog()else toast("Дождись ответа ChatGPT")}
         addButton(panel,"Подключение ChatGPT"){dlg.dismiss();startActivity(Intent(this,ChatGptSettingsActivity::class.java))}
         dlg.show()
     }

@@ -15,3 +15,7 @@ The app sends the user's prompt and necessary tool results to OpenAI through aut
 ## Basket proposals
 
 The model can propose a complete replacement shopping list using validated quantities and units. Local code computes package costs from a fresh snapshot, preserves matching at-home amounts, marks missing prices, and displays a confirmation dialog with the budget. No automatic basket replacement or order. The prior read-only limitation above refers to the first commit; this extension is not yet tested with a live account.
+
+## Local context
+
+Recent 24 messages persist in device-local preferences (12 sent per request), plus an editable 4,000-character food/shopping profile. ChatGPT can propose a profile update only after a user asks to remember/forget something; confirmation is required. New chat clears history, not profile; clear-all removes both locally, not remote account data. Days, people, budget, shipping and calorie target are included in requests and saved. No access to existing ChatGPT account memory. Local storage is not separately encrypted. Live account behavior still requires Android testing.
