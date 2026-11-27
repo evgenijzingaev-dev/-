@@ -125,11 +125,11 @@ class BatchQuoteActivity:Activity(){
         }
         status.text="Результат подбора: "+known.size+"/"+quotes.size
         val total=subtotal+delivery+other
-        val message="Известные расходы с доставкой: "+rub(total)+"\nБюджет: "+rub(budget)+"\nНе найдено: "+unknown+"\n"+(if(total>budget)"Известные расходы выше бюджета.\n" else if(unknown>0)"Бюджет ещё не подтверждён.\n" else "Проверь реальные цены в магазине.\n")+"\n"+lines+"\n\nПеренос сохраняет только локальные цены. Товары в магазине не добавлены."
+        val message="Известные расходы с доставкой: "+rub(total)+"\nБюджет: "+rub(budget)+"\nНе найдено: "+unknown+"\n"+(if(total>budget)"Известные расходы выше бюджета.\n" else if(unknown>0)"Бюджет ещё не подтверждён.\n" else "Проверь реальные цены в магазине.\n")+"\n"+lines+"\n\nПеренос сохраняет выбранные карточки, фасовки и локальные цены. Товары в магазине не добавлены."
         val d=AlertDialog.Builder(this).setTitle("Проверь предложенные товары").setMessage(message).setNegativeButton("Закрыть"){_,_->finish()}
-        if(known.isNotEmpty())d.setPositiveButton("Перенести цены"){_,_->
+        if(known.isNotEmpty())d.setPositiveButton("Сохранить товары"){_,_->
             val a=JSONArray()
-            for(q in quotes){val f=q.found;a.put(JSONObject().put("key",q.need.key).put("pack",f?.offer?.pack?:0L).put("price",f?.offer?.price?:-1L))}
+            for(q in quotes){val f=q.found;a.put(JSONObject().put("key",q.need.key).put("pack",f?.offer?.pack?:0L).put("price",f?.offer?.price?:-1L).put("url",f?.url.orEmpty()).put("title",f?.offer?.description.orEmpty()))}
             setResult(RESULT_OK,Intent().putExtra("quotes",a.toString()));finish()
         }
         d.show()

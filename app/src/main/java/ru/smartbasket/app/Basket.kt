@@ -7,7 +7,7 @@ import java.util.Locale
 /** Quantities are integer grams, millilitres or individual units; money is kopecks. */
 data class Ingredient(val name: String, val amount: Long, val unit: String)
 data class Recipe(val name: String, val servings: Int, val ingredients: List<Ingredient>, val method: String)
-data class BasketItem(val name: String, val amount: Long, val unit: String, val atHome: Long = 0, val pack: Long = 0, val price: Long? = null, val checked: Boolean = false) {
+data class BasketItem(val name: String, val amount: Long, val unit: String, val atHome: Long = 0, val pack: Long = 0, val price: Long? = null, val checked: Boolean = false, val storeUrl: String = "", val storeName: String = "") {
     val need: Long get() = (amount - atHome).coerceAtLeast(0)
     val packs: Long? get() = if (need == 0L) 0 else if (pack > 0) (need - 1) / pack + 1 else null
     val cost: Long? get() = if (need == 0L) 0 else if (price != null && packs != null) Math.multiplyExact(price, packs!!) else null

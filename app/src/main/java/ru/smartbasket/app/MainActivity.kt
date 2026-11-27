@@ -56,13 +56,13 @@ class MainActivity : Activity() {
             val arr = JSONArray(prefs.getString("items","[]"))
             items = (0 until arr.length()).map { n ->
                 val o = arr.getJSONObject(n)
-                BasketItem(o.getString("name"),o.getLong("amount"),o.getString("unit"),o.getLong("home"),o.getLong("pack"),if(o.isNull("price")) null else o.getLong("price"),o.optBoolean("checked"))
+                BasketItem(o.getString("name"),o.getLong("amount"),o.getString("unit"),o.getLong("home"),o.getLong("pack"),if(o.isNull("price")) null else o.getLong("price"),o.optBoolean("checked"),o.optString("storeUrl"),o.optString("storeName"))
             }
         } catch (_: Exception) { items = emptyList(); Toast.makeText(this,"Не удалось прочитать сохранённый список",Toast.LENGTH_LONG).show() }
     }
     private fun save() {
         val a=JSONArray()
-        for (i in items) a.put(JSONObject().put("name",i.name).put("amount",i.amount).put("unit",i.unit).put("home",i.atHome).put("pack",i.pack).put("price",i.price ?: JSONObject.NULL).put("checked",i.checked))
+        for (i in items) a.put(JSONObject().put("name",i.name).put("amount",i.amount).put("unit",i.unit).put("home",i.atHome).put("pack",i.pack).put("price",i.price ?: JSONObject.NULL).put("checked",i.checked).put("storeUrl",i.storeUrl).put("storeName",i.storeName))
         prefs.edit().putLong("budget",budget).putLong("delivery",delivery).putInt("portions",portions).putString("items",a.toString()).apply()
     }
     private fun update() { save(); render() }
@@ -171,7 +171,8 @@ class MainActivity : Activity() {
         c.addView(label(when { s.over -> "Превышение бюджета минимум на ${rub(s.totalKnown-budget)}"; !s.complete -> "Без цены/фасовки: ${s.unknown}. Бюджет пока не подтверждён."; else -> "Остаток бюджета: ${rub(budget-s.totalKnown)}" },14f,gray))
         c.addView(label("Доставка (введено вручную): ${rub(delivery)}",13f,gray))
         if(items.any { it.need>0 && !it.checked }) {
-            addButton(c,"Автоматически подобрать цены",true){batchQuote()}
+            if(items.any { it.need>0 && !it.checked && it.storeUrl.isNotBlank() }) addButton(c,"Перенести товары в Пятёрочку",true){prepareTransfer()}
+            addButton(c,"Автоматически подобрать товары",true){batchQuote()}
             addButton(c,"Открывать товары по очереди"){startGuided()}
         }
         addButton(c,"Бюджет и доставка") { budgetDialog() }
@@ -188,6 +189,7 @@ class MainActivity : Activity() {
             val check=CheckBox(this).apply { text=i.name; textSize=17f; setTextColor(ink); isChecked=i.checked; setOnCheckedChangeListener { _,v -> items=items.toMutableList().also { it[index]=i.copy(checked=v) }; save(); progress.text="Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}" } }
             item.addView(check)
             item.addView(label("Нужно: ${i.amount} ${i.unit} · дома: ${i.atHome} · купить: ${i.need} ${i.unit}",14f,gray))
+            if(i.storeName.isNotBlank()) item.addView(label("Подобран: "+i.storeName,14f,green,true))
             val cost=i.cost
             item.addView(label(if(i.need==0L) "Есть дома" else if(cost==null) "Цена или фасовка не указана" else "${i.packs} уп. × ${rub(i.price!!)} = ${rub(cost)}",15f,green,true))
             val buttons=horizontal()
@@ -223,7 +225,7 @@ class MainActivity : Activity() {
         val dlg=AlertDialog.Builder(this).setTitle(i.name).setView(form).setNegativeButton("Отмена",null).setNeutralButton("Удалить"){_,_->items=items.filterIndexed{n,_->n!=index};update()}.setPositiveButton("Сохранить",null).create()
         dlg.setOnShowListener {dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val a=q.text.toString().toLongOrNull();val b=h.text.toString().toLongOrNull();val c=if(p.text.isBlank())0L else p.text.toString().toLongOrNull();val price=money(v.text.toString())
-            if(a==null||a !in 1..10_000_000||b==null||b !in 0..10_000_000||c==null||c !in 0..10_000_000||(!v.text.isBlank()&&price==null))toast("Проверь количество и цену") else {items=items.toMutableList().also{it[index]=i.copy(amount=a,atHome=b,pack=c,price=price,checked=false)};update();dlg.dismiss()}
+            if(a==null||a !in 1..10_000_000||b==null||b !in 0..10_000_000||c==null||c !in 0..10_000_000||(!v.text.isBlank()&&price==null))toast("Проверь количество и цену") else {items=items.toMutableList().also{it[index]=i.copy(amount=a,atHome=b,pack=c,price=price,checked=false,storeUrl="",storeName="")};update();dlg.dismiss()}
         }};dlg.show()
     }
     private fun importDialog(initial:String) {
@@ -244,6 +246,16 @@ class MainActivity : Activity() {
     private fun listText()=items.filter{it.need>0 && !it.checked}.joinToString("\n"){"${it.name} — ${it.need} ${it.unit}"}.ifEmpty{"Список пуст"}
     private fun share(){startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,listText()),"Поделиться покупками"))}
     private fun copy(s:String){(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Покупки",s));toast("Скопировано")}
+    private fun prepareTransfer(){
+        val ready=buildTransfer(items,budget,delivery)
+        if(ready.error!=null){AlertDialog.Builder(this).setTitle("Сначала проверь список").setMessage(ready.error).setPositiveButton("ОК",null).show();return}
+        val rows=JSONArray()
+        for(line in ready.lines) rows.put(JSONObject().put("name",line.name).put("url",line.url).put("quantity",line.quantity).put("price",line.price))
+        val text=ready.lines.joinToString("\n"){it.name+" × "+it.quantity+" = "+rub(it.quantity*it.price)}
+        AlertDialog.Builder(this).setTitle("Перенос в магазин").setMessage(text+"\n\nРасчёт с доставкой: "+rub(ready.total)+"\nОткроется официальный сайт. Проверь адрес и отсутствие лишних товаров. Перенос экспериментальный: при любой неопределённости остановится. Оплаты и удаления товаров нет.").setNegativeButton("Отмена",null).setPositiveButton("Продолжить"){_,_->
+            startActivity(Intent(this,CartTransferActivity::class.java).putExtra("lines",rows.toString()))
+        }.show()
+    }
     private fun batchQuote(){
         val arr=JSONArray()
         for(i in items.filter{it.need>0&&!it.checked})arr.put(JSONObject().put("key",key(i.name,i.unit)).put("name",i.name).put("unit",i.unit).put("amount",i.need))
@@ -284,7 +296,7 @@ class MainActivity : Activity() {
                     val o=offers[key(i.name,i.unit)]
                     val q=o?.optLong("pack",0)?:0L
                     val p=o?.optLong("price",-1)?:-1L
-                    if(o==null)i else if(q in 1..10_000_000&&p in 0..100_000_000)i.copy(pack=q,price=p)else i.copy(price=null)
+                    if(o==null)i else if(q in 1..10_000_000&&p in 0..100_000_000&&storeProductUrl(Uri.parse(o.optString("url"))))i.copy(pack=q,price=p,storeUrl=o.optString("url"),storeName=o.optString("title"))else i.copy(price=null,storeUrl="",storeName="")
                 }
                 tab=0;update();toast("Цены перенесены. Сверь итог магазина.")
             }catch(_:Exception){toast("Не удалось прочитать результаты")}
@@ -302,7 +314,7 @@ class MainActivity : Activity() {
         if(pack !in 1..10_000_000||price !in 0..100_000_000)return
         val index=items.indexOfFirst{key(it.name,it.unit)==k}
         if(index<0)return
-        items=items.toMutableList().also{it[index]=it[index].copy(pack=pack,price=price)}
+        items=items.toMutableList().also{it[index]=it[index].copy(pack=pack,price=price,storeUrl="",storeName="")}
         tab=0;update();toast("Цена и фасовка перенесены. Проверь корзину магазина.")
         if(guided) {
             reviewed.add(k)
