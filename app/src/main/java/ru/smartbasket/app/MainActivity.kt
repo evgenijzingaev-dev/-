@@ -109,11 +109,10 @@ class MainActivity : Activity() {
         val root=vertical().apply { setBackgroundColor(bg) }
         val top=horizontal().apply{setPadding(dp(20),dp(6),dp(12),dp(6))}
         top.addView(label(when(tab){0->"Корзина";1->"Рецепты";2->"Магазин";else->"Умная корзина"},26f,ink,true),LinearLayout.LayoutParams(0,-2,1f))
-        more(top,"Настройки приложения",
-            "Бюджет и доставка" to {budgetDialog()},
-            "Проверить обновления" to {updater.check(true)},
-            "Установить обновление" to {updater.installDownloaded()},
-            "Версия приложения" to {toast(updater.installedVersion())})
+        val settingsButton=link("⚙"){appSettings()}
+        settingsButton.contentDescription="Настройки приложения"
+        settingsButton.textSize=26f;settingsButton.gravity=Gravity.CENTER
+        top.addView(settingsButton,LinearLayout.LayoutParams(dp(56),dp(56)))
         root.addView(top)
         val sc=ScrollView(this).apply { isFillViewport=true;isVerticalScrollBarEnabled=false;clipToPadding=false;setPadding(dp(16),dp(4),dp(16),dp(12)) }
         body=vertical(); sc.addView(body); root.addView(sc,LinearLayout.LayoutParams(-1,0,1f))
@@ -183,9 +182,15 @@ class MainActivity : Activity() {
             c.addView(label(if(s.complete)rub(s.totalKnown) else "Цены ещё не проверены",15f,gray))
             c.addView(link("Открыть корзину  ›"){tab=0;render()})
         }
-        gap(body,6)
-        body.addView(label("Версия приложения "+updater.installedVersion(),15f,gray).apply{gravity=Gravity.CENTER})
-        addButton(body,"Проверить обновление"){updater.check(true)}
+    }
+    private fun appSettings(){
+        val panel=vertical().apply{setPadding(dp(20),dp(8),dp(20),dp(12))}
+        panel.addView(label("Версия приложения "+updater.installedVersion(),17f,gray))
+        val dlg=AlertDialog.Builder(this).setTitle("Настройки").setView(panel).setPositiveButton("Закрыть",null).create()
+        addButton(panel,"Проверить обновление",true){dlg.dismiss();updater.check(true)}
+        addButton(panel,"Установить скачанное обновление"){dlg.dismiss();updater.installDownloaded()}
+        addButton(panel,"Бюджет и доставка"){dlg.dismiss();budgetDialog()}
+        dlg.show()
     }
     private fun planSettings(){
         val d=field(days.toString(),numeric=true)
@@ -311,15 +316,27 @@ class MainActivity : Activity() {
             .setMessage(catalogLabel()+"\nПодтверди, что адрес доставки и магазин не менялись. Цены предварительные.")
             .setNegativeButton("Обновить"){_,_->syncCatalog()}
             .setPositiveButton("Подобрать"){_,_->
-                var found=0
-                items=items.map{i->
-                    if(i.need<=0||i.checked)i else {
-                        val m=findCatalogMatch(snapshot.entries,i)
-                        if(m==null)i.copy(price=null,storeName="",storeUrl="")
-                        else{found++;i.copy(pack=m.offer.pack,price=m.offer.price,storeName=m.offer.description,storeUrl=m.entry.url)}
-                    }
-                }
-                tab=0;update();toast("Из каталога подобрано "+found+" позиций")
+                val original=items
+                val progress=AlertDialog.Builder(this).setTitle("Подбор товаров").setMessage("Сравниваем цены в сохранённом каталоге…").setNegativeButton("Отмена",null).create()
+                progress.show()
+                Thread{
+                    try{
+                        var found=0
+                        val result=original.map{i->
+                            if(i.need<=0||i.checked)i else {
+                                val m=findCatalogMatch(snapshot.entries,i)
+                                if(m==null)i.copy(price=null,storeName="",storeUrl="")
+                                else{found++;i.copy(pack=m.offer.pack,price=m.offer.price,storeName=m.offer.description,storeUrl=m.entry.url)}
+                            }
+                        }
+                        runOnUiThread{
+                            if(isFinishing||isDestroyed||!progress.isShowing)return@runOnUiThread
+                            progress.dismiss()
+                            if(items!=original){toast("Список изменился, повтори подбор");return@runOnUiThread}
+                            items=result;tab=0;update();toast("Из каталога подобрано "+found+" позиций")
+                        }
+                    }catch(e:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed&&progress.isShowing){progress.dismiss();toast("Ошибка подбора товаров")}}}
+                }.start()
             }.show()
     }
     private fun catalogBrowser(){
