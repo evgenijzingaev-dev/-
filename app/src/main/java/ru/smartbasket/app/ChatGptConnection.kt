@@ -148,11 +148,23 @@ class ChatGptConnection(context:Context){
         return claims
     }
     /** Blocking; invoke on worker thread. Browser callback is restricted to IPv4 loopback. */
-    fun signIn(openBrowser:(String)->Unit)=synchronized(sessionLock){
+    fun signIn(openBrowser: (String) -> Unit): Unit = synchronized(sessionLock) {
+        val host = prefs.getString("host", null) ?: ("urn:uuid:" + UUID.randomUUID()).also {
+            require(prefs.edit().putString("host", it).commit()) { "Не удалось сохранить идентификатор подключения" }
+        }
+        var client = prefs.getString("client", null)
+        val previousSubject = prefs.getString("subject", null)
+        for (attempt in 0..1) {
+            val retryClient = signInAttempt(openBrowser, host, client, previousSubject)
+                ?: return@synchronized
+            client = retryClient
+        }
+        throw ChatGptAuthorizationException("Код входа ChatGPT больше не действует. Начни вход заново.")
+    }
+
+    // A rejected code must not be retried. Reauthorize once with the client issued for this attempt.
+    private fun signInAttempt(openBrowser: (String) -> Unit, host: String, existing: String?, previousSubject: String?): String? {
         val verifier=randomValue();val state=randomValue();val nonce=randomValue()
-        val host=prefs.getString("host",null)?:("urn:uuid:"+UUID.randomUUID()).also{prefs.edit().putString("host",it).commit()}
-        val existing=prefs.getString("client",null)
-        val previousSubject=prefs.getString("subject",null)
         ServerSocket().use{server->
             server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"),0));server.soTimeout=1000
             val redirect="http://127.0.0.1:"+server.localPort+"/auth/callback"
@@ -188,8 +200,13 @@ class ChatGptConnection(context:Context){
             val issued=cb.getQueryParameter("client_id")?:existing?:error("OpenAI не вернул client_id")
             require(issued.startsWith("oaiapp_")&&issued.length<=256&&(existing==null||existing==issued)){"Некорректная регистрация OpenAI"}
             val code=cb.getQueryParameters("code").singleOrNull()?.takeIf{it.isNotBlank()}?:error("Не получен код входа")
-            val tok=json(auth+"/api/accounts/oauth/token",form(mapOf("grant_type" to "authorization_code","client_id" to issued,"code" to code,
-                "code_verifier" to verifier,"redirect_uri" to redirect,"resource" to api)),"application/x-www-form-urlencoded")
+            val tok = try {
+                json(auth+"/api/accounts/oauth/token",form(mapOf("grant_type" to "authorization_code","client_id" to issued,"code" to code,
+                    "code_verifier" to verifier,"redirect_uri" to redirect,"resource" to api)),"application/x-www-form-urlencoded")
+            } catch (e: OpenAiHttpException) {
+                if (e.oauthCode == "invalid_grant") return issued
+                throw e
+            }
             val identity=verifyIdentity(tok.getString("id_token"),issued,nonce)
             require(previousSubject==null||previousSubject==identity.getString("sub")){"Выбран другой аккаунт. Сначала отключи предыдущий."}
             require(tok.optString("scope").split(' ').contains("chatgpt.tokens.use.direct")){"Не разрешено использование плана ChatGPT"}
@@ -199,6 +216,7 @@ class ChatGptConnection(context:Context){
                 .put("subject",identity.getString("sub")).put("client",issued)
             require(prefs.edit().putString("client",issued).putString("subject",identity.getString("sub")).putString("session",seal(saved.toString())).commit()){"Не удалось сохранить подключение"}
         }
+        return null
     }
     fun models():List<Pair<String,String>>{
         val token=access()
@@ -279,3 +297,4 @@ class ChatGptConnection(context:Context){
         error("Поток ChatGPT прервался")
     }
 }
+
