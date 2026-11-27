@@ -29,7 +29,15 @@ jobs:
           tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           image='system-images;android-34;default;x86_64'
           "$tools/sdkmanager" 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools' emulator "$image"
-          echo no | "$tools/avdmanager" create avd -n proposal -k "$image" --force
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/proposal-avds"
+          mkdir -p "$ANDROID_AVD_HOME"
+          adb version
+          echo no | "$tools/avdmanager" create avd -n proposal -k "$image" -p "$ANDROID_AVD_HOME/proposal.avd" --force
+          test -s "$ANDROID_AVD_HOME/proposal.avd/config.ini"
+          printf 'path=%s/proposal.avd\ntarget=android-34\n' "$ANDROID_AVD_HOME" > "$ANDROID_AVD_HOME/proposal.ini"
+          emulator -list-avds | grep -Fx proposal
           "$ANDROID_HOME/emulator/emulator" -avd proposal -accel on -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
           timeout 360 bash -c 'adb wait-for-device; until adb shell getprop sys.boot_completed | grep -q 1; do sleep 2; done' || { tail -40 "$RUNNER_TEMP/emulator.log"; exit 1; }
           adb shell wm size 720x1280
