@@ -7,6 +7,8 @@ import org.json.JSONTokener
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
+class CatalogHttpException(val status:Int):IllegalStateException("API вернул HTTP "+status)
+
 /** Read-only, experimental site API. No authentication material, impersonation, redirects or retries. */
 class CatalogApi(private val cancelled:()->Boolean,private val getOverride:((String)->String)?=null){
     private var requests=0
@@ -22,7 +24,7 @@ class CatalogApi(private val cancelled:()->Boolean,private val getOverride:((Str
             c.setRequestProperty("Accept","application/json")
             try{
                 val status=c.responseCode
-                if(status !in 200..299)throw IllegalStateException("API вернул HTTP "+status+". Прямая загрузка остановлена.")
+                if(status !in 200..299)throw CatalogHttpException(status)
                 if(!c.contentType.orEmpty().contains("json",true))throw IllegalStateException("API не вернул JSON")
                 c.inputStream.bufferedReader(Charsets.UTF_8).use{reader->
                     val out=StringBuilder();val buf=CharArray(8192)
