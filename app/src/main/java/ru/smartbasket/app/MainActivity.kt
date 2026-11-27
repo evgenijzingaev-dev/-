@@ -19,10 +19,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : Activity() {
-    private val green = Color.rgb(23,107,74)
+    private val green = Color.rgb(25,104,72)
     private val ink = Color.rgb(27,40,34)
     private val gray = Color.rgb(88,105,96)
-    private val bg = Color.rgb(244,247,244)
+    private val bg = Color.rgb(246,247,244)
+    private val soft = Color.rgb(231,239,232)
     private val prefs by lazy { getSharedPreferences("basket", MODE_PRIVATE) }
     private var items = listOf<BasketItem>()
     private var budget = 300000L
@@ -74,16 +75,64 @@ class MainActivity : Activity() {
     private fun label(s: String, size: Float=16f, color: Int=ink, bold: Boolean=false) = TextView(this).apply { text=s; textSize=size; setTextColor(color); if(bold) setTypeface(null,Typeface.BOLD); setPadding(0,dp(3),0,dp(3)) }
     private fun gap(parent: LinearLayout, height: Int=10) { parent.addView(View(this),LinearLayout.LayoutParams(1,dp(height))) }
     private fun card(parent: LinearLayout): LinearLayout = vertical().apply { background=rounded(Color.WHITE); setPadding(dp(16),dp(14),dp(16),dp(14)); parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(10) }) }
-    private fun button(s: String, primary: Boolean=false, action: ()->Unit) = Button(this).apply { text=s; textSize=14f; isAllCaps=false; setTextColor(if(primary) Color.WHITE else green); background=rounded(if(primary)green else Color.rgb(227,240,232),12); minHeight=dp(48); minimumHeight=dp(48); setPadding(dp(12),dp(8),dp(12),dp(8)); setOnClickListener { action() } }
-    private fun addButton(p: LinearLayout, s:String, primary:Boolean=false, action:()->Unit) { p.addView(button(s,primary,action),LinearLayout.LayoutParams(-1,dp(49)).apply { topMargin=dp(8) }) }
+    private fun button(s: String, primary: Boolean=false, action: ()->Unit) = Button(this).apply {
+        text=s; textSize=14f; isAllCaps=false; letterSpacing=0f
+        setTypeface(null,Typeface.BOLD); setTextColor(if(primary) Color.WHITE else green)
+        background=android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x18000000),rounded(if(primary)green else soft,14),null)
+        stateListAnimator=null; minHeight=dp(48); minimumHeight=dp(48); minWidth=0;minimumWidth=0
+        setPadding(dp(10),dp(5),dp(10),dp(5)); setOnClickListener { action() }
+    }
+    private fun addButton(p: LinearLayout, s:String, primary:Boolean=false, action:()->Unit) {
+        p.addView(button(s,primary,action),LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(8) })
+    }
+    private fun link(s:String,action:()->Unit)=TextView(this).apply{
+        text=s;textSize=14f;setTextColor(green);setTypeface(null,Typeface.BOLD);gravity=Gravity.CENTER_VERTICAL
+        minHeight=dp(48);setPadding(dp(10),dp(4),dp(10),dp(4))
+        background=android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x16000000),null,rounded(Color.WHITE,12))
+        isClickable=true;isFocusable=true;setOnClickListener{action()}
+    }
+    private fun menu(anchor:View,vararg actions:Pair<String,()->Unit>){
+        val popup=PopupMenu(this,anchor)
+        actions.forEachIndexed{i,p->popup.menu.add(0,i,i,p.first)}
+        popup.setOnMenuItemClickListener{item->actions.getOrNull(item.itemId)?.second?.invoke();true}
+        popup.show()
+    }
+    private fun more(p:LinearLayout,description:String,vararg actions:Pair<String,()->Unit>){
+        val v=link("⋯"){};v.contentDescription=description;v.gravity=Gravity.CENTER;v.textSize=24f
+        v.setOnClickListener{menu(v,*actions)}
+        p.addView(v,LinearLayout.LayoutParams(dp(48),dp(48)))
+    }
+    private fun divider(p:LinearLayout){p.addView(View(this).apply{setBackgroundColor(Color.rgb(232,235,230))},LinearLayout.LayoutParams(-1,dp(1)))}
     private fun render() {
-        val root=vertical().apply { setBackgroundColor(bg); setPadding(dp(16),dp(10),dp(16),dp(8)) }
-        root.addView(label("Умная корзина",26f,green,true))
-        root.addView(label("Планирование покупок • локальная версия",13f,gray))
-        val tabs=horizontal()
-        listOf(3 to "Главная",1 to "Рецепты",0 to "Корзина",2 to "Магазин").forEach { (i,s) -> tabs.addView(button(s,tab==i){tab=i;render()},LinearLayout.LayoutParams(0,dp(48),1f).apply { setMargins(dp(2),dp(8),dp(2),dp(2)) }) }
-        val sc=ScrollView(this).apply { isFillViewport=true }
+        window.statusBarColor=bg;window.navigationBarColor=Color.WHITE
+        window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        val root=vertical().apply { setBackgroundColor(bg) }
+        val top=horizontal().apply{setPadding(dp(20),dp(6),dp(12),dp(6))}
+        top.addView(label(when(tab){0->"Корзина";1->"Рецепты";2->"Магазин";else->"Умная корзина"},26f,ink,true),LinearLayout.LayoutParams(0,-2,1f))
+        more(top,"Настройки приложения",
+            "Бюджет и доставка" to {budgetDialog()},
+            "Проверить обновления" to {updater.check(true)},
+            "Установить обновление" to {updater.installDownloaded()},
+            "Версия приложения" to {toast(updater.installedVersion())})
+        root.addView(top)
+        val sc=ScrollView(this).apply { isFillViewport=true;isVerticalScrollBarEnabled=false;clipToPadding=false;setPadding(dp(16),dp(4),dp(16),dp(12)) }
         body=vertical(); sc.addView(body); root.addView(sc,LinearLayout.LayoutParams(-1,0,1f))
+        divider(root)
+        val tabs=horizontal().apply{setBackgroundColor(Color.WHITE);setPadding(dp(6),dp(4),dp(6),dp(4))}
+        val names=listOf(3 to "Главная",1 to "Рецепты",0 to "Корзина",2 to "Магазин")
+        val symbols=listOf("⌂","≡","▣","▤")
+        names.forEachIndexed { n,(i,title)->
+            val v=vertical().apply{
+                gravity=Gravity.CENTER;isClickable=true;isFocusable=true;isSelected=tab==i;contentDescription=title
+                setOnClickListener{tab=i;render()}
+            }
+            val icon=label(symbols[n],22f,if(tab==i)green else gray,true).apply{
+                gravity=Gravity.CENTER;background=rounded(if(tab==i)soft else Color.TRANSPARENT,18)
+            }
+            v.addView(icon,LinearLayout.LayoutParams(dp(58),dp(30)))
+            v.addView(label(title,12f,if(tab==i)green else gray,tab==i))
+            tabs.addView(v,LinearLayout.LayoutParams(0,dp(58),1f))
+        }
         root.addView(tabs)
         setContentView(root)
         when(tab){ 0->basketScreen(); 1->recipeScreen(); 2->storeScreen(); else->homeScreen() }
@@ -104,38 +153,44 @@ class MainActivity : Activity() {
             })
         }
         hero.addView(input,LinearLayout.LayoutParams(-1,-2))
-        addButton(hero,"Сказать голосом") { voice() }
-        gap(hero)
-        hero.addView(label("На сколько дней?",15f,gray,true))
-        val presets=horizontal()
-        listOf(1 to "Сегодня",3 to "3 дня",7 to "Неделя").forEach{(n,s)->presets.addView(button(s,days==n){days=n;render()},LinearLayout.LayoutParams(0,dp(48),1f).apply{setMargins(dp(2),0,dp(2),0)})}
-        hero.addView(presets)
-        hero.addView(label("Порций на блюдо",15f,gray,true))
-        val people=horizontal()
-        people.addView(button("−"){if(portions>1){portions--;save();render()}},LinearLayout.LayoutParams(0,dp(48),1f))
-        people.addView(label("$portions",24f,ink,true).apply{gravity=Gravity.CENTER},LinearLayout.LayoutParams(0,dp(48),1f))
-        people.addView(button("+"){if(portions<20){portions++;save();render()}},LinearLayout.LayoutParams(0,dp(48),1f))
-        hero.addView(people)
-        hero.addView(label("Бюджет",15f,gray,true))
-        val b=field((budget/100).toString(),"₽",true,true)
-        hero.addView(b)
-        addButton(hero,"Составить меню и список",true) {
+        val shortcuts=horizontal()
+        shortcuts.addView(link("Голосовой ввод"){voice()},LinearLayout.LayoutParams(0,-2,1f))
+        shortcuts.addView(link("Вставить список"){importDialog("")},LinearLayout.LayoutParams(0,-2,1f))
+        hero.addView(shortcuts)
+        val params=horizontal()
+        val details=label("$days дн.  ·  $portions порц.  ·  "+rub(budget),14f,gray,true)
+        params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
+        params.addView(link("Изменить"){planSettings()})
+        hero.addView(params)
+        addButton(hero,"Составить меню",true) {
             try {
-                val limit=money(b.text.toString())?:throw IllegalArgumentException("Укажи бюджет")
-                val req=parseRequest(promptDraft,days,portions.coerceAtMost(20),limit)
+                val req=parseRequest(promptDraft,days,portions.coerceAtMost(20),budget)
                 previewPlan(buildPlan(req))
             }catch(e:Exception){toast(e.message?:"Проверь запрос")}
         }
-        hero.addView(label("Локальный подбор из встроенных рецептов. Цены магазина пока не известны.",13f,gray))
-        val quick=card(body)
-        quick.addView(label("Уже есть рецепт?",18f,ink,true))
-        addButton(quick,"Вставить обычный список покупок"){importDialog("")}
-        addButton(quick,"Выбрать блюда вручную"){tab=1;render()}
+        hero.addView(label("Подбор из встроенных рецептов; цены проверяются отдельно.",12f,gray))
+        val shop=card(body)
+        shop.addView(label("Пятёрочка",19f,ink,true))
+        shop.addView(label(catalogLabel(),13f,gray))
+        val shopActions=horizontal()
+        shopActions.addView(link("Обновить цены"){syncCatalog()},LinearLayout.LayoutParams(0,-2,1f))
+        shopActions.addView(link("Выгодные товары"){discountReport()},LinearLayout.LayoutParams(0,-2,1f))
+        shop.addView(shopActions)
         if(items.isNotEmpty()) {
             val c=card(body);c.addView(label("Текущий список · ${items.size} поз.",18f,ink,true))
             val s=summarize(items,budget,delivery)
             c.addView(label(if(s.complete)rub(s.totalKnown) else "Цены ещё не проверены",15f,gray))
-            addButton(c,"Продолжить покупки",true){tab=0;render()}
+            c.addView(link("Открыть корзину  ›"){tab=0;render()})
+        }
+    }
+    private fun planSettings(){
+        val d=field(days.toString(),numeric=true)
+        val p=field(portions.toString(),numeric=true)
+        val b=field((budget/100).toString(),numeric=true,decimal=true)
+        dialog("Параметры меню",fields("Дней (1–14)" to d,"Порций (1–20)" to p,"Бюджет, ₽" to b)){
+            val n=d.text.toString().toIntOrNull();val count=p.text.toString().toIntOrNull();val limit=money(b.text.toString())
+            if(n==null||n !in 1..14||count==null||count !in 1..20||limit==null)false
+            else{days=n;portions=count;budget=limit;update();true}
         }
     }
     private fun voice(){
@@ -172,43 +227,71 @@ class MainActivity : Activity() {
         c.addView(label((if(s.complete) "Итого" else "Известный минимум")+": "+rub(s.totalKnown),20f,if(s.over) Color.rgb(175,46,32) else ink,true))
         c.addView(label(when { s.over -> "Превышение бюджета минимум на ${rub(s.totalKnown-budget)}"; !s.complete -> "Без цены/фасовки: ${s.unknown}. Бюджет пока не подтверждён."; else -> "Остаток бюджета: ${rub(budget-s.totalKnown)}" },14f,gray))
         c.addView(label("Доставка (введено вручную): ${rub(delivery)}",13f,gray))
-        if(items.any { it.need>0 && !it.checked }) {
-            if(items.any { it.need>0 && !it.checked && it.storeUrl.isNotBlank() }) addButton(c,"Перенести товары в Пятёрочку",true){prepareTransfer()}
-            c.addView(label(catalogLabel(),13f,gray))
-            addButton(c,"Подобрать из загруженного каталога",true){chooseFromCatalog()}
-            addButton(c,"Обновить весь каталог"){syncCatalog()}
-            addButton(c,"Поиск по отдельным категориям"){batchQuote()}
-            addButton(c,"Открывать товары по очереди"){startGuided()}
+        val hasNeeds=items.any{it.need>0&&!it.checked}
+        if(hasNeeds){
+            val ready=buildTransfer(items,budget,delivery)
+            if(ready.error==null)addButton(c,"Перенести в Пятёрочку",true){prepareTransfer()}
+            else addButton(c,"Подобрать товары и цены",true){chooseFromCatalog()}
+            c.addView(label(catalogLabel(),12f,gray))
         }
-        addButton(c,"Бюджет и доставка") { budgetDialog() }
         val tools=horizontal()
-        tools.addView(button("＋ Продукт"){addDialog()},LinearLayout.LayoutParams(0,dp(48),1f))
-        tools.addView(button("Вставить список"){importDialog("")},LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(6)})
+        tools.addView(link("＋ Продукт"){addDialog()},LinearLayout.LayoutParams(0,-2,1f))
+        more(tools,"Действия с корзиной",
+            "Вставить список" to {importDialog("")},
+            "Подобрать товары" to {chooseFromCatalog()},
+            "Обновить каталог" to {syncCatalog()},
+            "Поиск по категориям" to {batchQuote()},
+            "Открывать товары по очереди" to {startGuided()},
+            "Бюджет и доставка" to {budgetDialog()},
+            "Поделиться списком" to {share()},
+            "Очистить список" to {AlertDialog.Builder(this).setTitle("Удалить все покупки?").setNegativeButton("Отмена",null).setPositiveButton("Очистить"){_,_->items=emptyList();update()}.show();Unit})
         c.addView(tools)
-        currentPlan?.let { plan->addButton(c,"Посмотреть меню"){AlertDialog.Builder(this).setTitle("Меню").setMessage(plan.meals.joinToString("\n"){"День ${it.day} · ${it.kind}: ${it.recipe.name}"}).setPositiveButton("ОК",null).show()} }
+        currentPlan?.let { plan->c.addView(link("Посмотреть меню  ›"){AlertDialog.Builder(this).setTitle("Меню").setMessage(plan.meals.joinToString("\n"){"День ${it.day} · ${it.kind}: ${it.recipe.name}"}).setPositiveButton("ОК",null).show()}) }
         if(items.isEmpty()) { val empty=card(body); empty.addView(label("Пока нет покупок",18f,ink,true)); empty.addView(label("Выбери рецепты или добавь свои продукты.",14f,gray)); addButton(empty,"Выбрать рецепты") { tab=1;render() }; return }
         val progress = label("Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}",19f,ink,true)
         body.addView(progress)
+        val list=card(body)
         items.forEachIndexed { index,i ->
-            val item=card(body)
-            val check=CheckBox(this).apply { text=i.name; textSize=17f; setTextColor(ink); isChecked=i.checked; setOnCheckedChangeListener { _,v -> items=items.toMutableList().also { it[index]=i.copy(checked=v) }; save(); progress.text="Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}" } }
-            item.addView(check)
-            item.addView(label("Нужно: ${i.amount} ${i.unit} · дома: ${i.atHome} · купить: ${i.need} ${i.unit}",14f,gray))
-            if(i.storeName.isNotBlank()) item.addView(label("Подобран: "+i.storeName,14f,green,true))
+            if(index>0)divider(list)
+            val row=horizontal()
+            val check=CheckBox(this).apply {
+                contentDescription=i.name;isChecked=i.checked;minWidth=dp(48)
+                setOnCheckedChangeListener { _,v ->
+                    items=items.toMutableList().also {it[index]=it[index].copy(checked=v)};save()
+                    progress.text="Покупки · ${items.count{it.checked || it.need==0L}} / ${items.size}"
+                }
+            }
+            row.addView(check,LinearLayout.LayoutParams(dp(48),dp(48)))
+            val details=vertical().apply{setPadding(0,dp(10),0,dp(10))}
+            details.addView(label(i.name,16f,ink,true))
+            details.addView(label("Купить ${i.need} ${i.unit}"+if(i.atHome>0)" · дома ${i.atHome}" else "",12f,gray))
+            if(i.storeName.isNotBlank())details.addView(label(i.storeName,12f,gray))
             val cost=i.cost
-            item.addView(label(if(i.need==0L) "Есть дома" else if(cost==null) "Цена или фасовка не указана" else "${i.packs} уп. × ${rub(i.price!!)} = ${rub(cost)}",15f,green,true))
-            val buttons=horizontal()
-            buttons.addView(button("Цена / количество") { editDialog(index) },LinearLayout.LayoutParams(0,dp(48),1f))
-            buttons.addView(button("В магазин") { openStore(index) },LinearLayout.LayoutParams(0,dp(48),1f).apply{leftMargin=dp(6)})
-            item.addView(buttons)
+            details.addView(label(if(i.need==0L)"Есть дома" else if(cost==null)"Цена неизвестна" else rub(cost),14f,green,true))
+            details.setOnClickListener{editDialog(index)}
+            row.addView(details,LinearLayout.LayoutParams(0,-2,1f))
+            more(row,"Действия: "+i.name,"Цена и количество" to {editDialog(index)},"Открыть магазин" to {openStore(index)})
+            list.addView(row)
         }
-        addButton(body,"Поделиться списком") { share() }
-        addButton(body,"Очистить список") { AlertDialog.Builder(this).setTitle("Удалить все покупки?").setNegativeButton("Отмена",null).setPositiveButton("Очистить"){_,_->items=emptyList();update()}.show() }
     }
+
     private fun recipeScreen() {
-        val top=card(body); top.addView(label("Порции на блюдо: $portions",20f,ink,true)); addButton(top,"Изменить число порций"){ val e=field(portions.toString(),"1–100",true); dialog("Число порций",e){ val n=e.text.toString().toIntOrNull(); if(n==null||n !in 1..100) false else {portions=n;update();true} } }
-        for(r in recipes){ val c=card(body); c.addView(label(r.name,19f,ink,true)); c.addView(label(r.ingredients.joinToString(" · "){"${it.name} ${(it.amount*portions+r.servings-1)/r.servings} ${it.unit}"},14f,gray)); c.addView(label(r.method,14f,ink)); addButton(c,"Добавить на $portions порц.",true){ try { items=merge(items,r.ingredients,portions,r.servings); save(); toast("Рецепт добавлен") }catch(e:Exception){toast(e.message?:"Ошибка количества")} } }
-        addButton(body,"Перейти в корзину") { tab=0;render() }
+        val top=card(body)
+        val header=horizontal()
+        header.addView(label("$portions порц. на блюдо",15f,gray,true),LinearLayout.LayoutParams(0,-2,1f))
+        header.addView(link("Изменить"){planSettings()});top.addView(header)
+        for(r in recipes){
+            val c=card(body);val row=horizontal()
+            val info=vertical()
+            info.addView(label(r.name,18f,ink,true))
+            info.addView(label("${r.ingredients.size} ингредиентов · $portions порц.",13f,gray))
+            info.setOnClickListener{AlertDialog.Builder(this).setTitle(r.name).setMessage(r.ingredients.joinToString("\n"){"${it.name} ${(it.amount*portions+r.servings-1)/r.servings} ${it.unit}"}+"\n\n"+r.method).setPositiveButton("Закрыть",null).show()}
+            row.addView(info,LinearLayout.LayoutParams(0,-2,1f))
+            val plus=button("+",false){try{items=merge(items,r.ingredients,portions,r.servings);save();toast("Рецепт добавлен")}catch(e:Exception){toast(e.message?:"Ошибка количества")}}
+            plus.contentDescription="Добавить "+r.name
+            row.addView(plus,LinearLayout.LayoutParams(dp(48),dp(48)))
+            c.addView(row)
+        }
     }
     private fun catalogLabel():String {
         val s=LocalCatalog(this).read()?:return "Каталог ещё не загружен"
@@ -271,15 +354,22 @@ class MainActivity : Activity() {
         }.start()
     }
     private fun storeScreen() {
-        val updates=card(body);updates.addView(label("Версия приложения: "+updater.installedVersion(),17f,ink,true))
-        addButton(updates,"Проверить обновления"){updater.check(true)}
-        addButton(updates,"Установить скачанное обновление"){updater.installDownloaded()}
-        val catalog=card(body);catalog.addView(label("Каталог и цены",22f,green,true));catalog.addView(label(catalogLabel(),14f,gray))
-        addButton(catalog,"Загрузить / обновить весь каталог",true){syncCatalog()}
-        addButton(catalog,"Поиск в загруженных товарах"){catalogBrowser()}
-        addButton(catalog,"Реальная выгода и история цен"){discountReport()}
-        val c=card(body); c.addView(label("Пятёрочка",23f,green,true)); c.addView(label("Встроенный браузер открывает официальный сайт. Войди через X5ID, выбери адрес доставки. Сессия хранится в WebView на телефоне.",16f)); addButton(c,"Открыть магазин в приложении",true){openStore()}; addButton(c,"Скопировать список покупок"){copy(listText())}; c.addView(label("Для конкретного ингредиента нажми «В магазин», выбери товар и перенеси цену и фасовку. Добавление и проверка корзины выполняются на сайте. Режим экспериментальный.",14f,gray))
-        val help=card(body); help.addView(label("Передача из ChatGPT",19f,ink,true)); help.addView(label("Поделись обычным списком ингредиентов из ChatGPT или вставь его на главной. Например: Молоко — 500 мл.",15f)); addButton(help,"Скопировать шаблон запроса"){copy("Составь список ингредиентов с количеством в граммах, миллилитрах или штуках, по одному продукту на строку.")}
+        val catalog=card(body)
+        catalog.addView(label("Пятёрочка",24f,ink,true))
+        catalog.addView(label(catalogLabel(),14f,gray))
+        addButton(catalog,"Обновить каталог",true){syncCatalog()}
+        val actions=horizontal()
+        actions.addView(link("Все товары  ›"){catalogBrowser()},LinearLayout.LayoutParams(0,-2,1f))
+        more(actions,"Действия магазина","Открыть сайт / изменить адрес" to {openStore()},"Скопировать список покупок" to {copy(listText())})
+        catalog.addView(actions)
+        val deals=card(body)
+        deals.addView(label("Реальная выгода",21f,ink,true))
+        deals.addView(label("Сравнение текущих цен с историей, а не только с зачёркнутой ценой.",14f,gray))
+        deals.addView(link("Посмотреть предложения  ›"){discountReport()})
+        val help=card(body)
+        help.addView(label("Импорт списка",18f,ink,true))
+        help.addView(link("Вставить из ChatGPT  ›"){importDialog("")})
+        help.addView(link("Скопировать шаблон запроса"){copy("Составь список ингредиентов с количеством в граммах, миллилитрах или штуках, по одному продукту на строку.")})
     }
     private fun field(value:String="",hint:String="", numeric:Boolean=false, decimal:Boolean=false) = EditText(this).apply { setText(value); this.hint=hint; inputType=if(numeric) InputType.TYPE_CLASS_NUMBER or (if(decimal) InputType.TYPE_NUMBER_FLAG_DECIMAL else 0) else InputType.TYPE_CLASS_TEXT; setSingleLine(true) }
     private fun fields(vararg pairs: Pair<String,EditText>): LinearLayout = vertical().apply { setPadding(dp(20),dp(8),dp(20),dp(12)); for((s,e) in pairs){addView(label(s,14f,gray));addView(e)} }
