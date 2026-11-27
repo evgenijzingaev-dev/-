@@ -9,10 +9,11 @@ data class FamilyMember(val name:String,val age:Int,val height:Int?,val weight:D
         (height==null || height in 30..250) && (weight==null || weight.isFinite() && weight in 1.0..350.0) &&
         activity.length<=100 && goal.length<=100 && tastes.length<=500 && restrictions.length<=500
     fun maintenance()=FamilyNutrition.maintenance(age,height,weight,sex,activityLevel)
+    fun macros()=maintenance()?.let{FamilyNutrition.macros(it)}
     fun json()=JSONObject().put("name",name).put("id",id).put("age",age).put("height_cm",height?:JSONObject.NULL)
         .put("weight_kg",weight?:JSONObject.NULL).put("activity",activity)
         .put("goal",if(age<18)"Возрастное питание без дефицита калорий" else goal)
-        .put("sex",sex).put("activity_level",activityLevel).put("maintenance_kcal_estimate",maintenance()?:JSONObject.NULL).put("preferences",tastes).put("restrictions",restrictions)
+        .put("sex",sex).put("activity_level",activityLevel).put("maintenance_kcal_estimate",maintenance()?:JSONObject.NULL).put("maintenance_macros_example",macros()?.let{JSONObject().put("protein_g",it.protein).put("fat_g",it.fat).put("carbs_g",it.carbs)}?:JSONObject.NULL).put("preferences",tastes).put("restrictions",restrictions)
 }
 class FamilyProfiles(context:Context){
     private val prefs=context.getSharedPreferences("family_profiles",Context.MODE_PRIVATE)
