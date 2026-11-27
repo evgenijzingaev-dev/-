@@ -36,6 +36,8 @@ class MainActivity : Activity() {
     private var calorieTarget:Int? = null
     private var promptDraft = ""
     private val memory by lazy{AssistantMemory(this)}
+    private val dishStore by lazy{GeneratedDishStore(this)}
+    private var draftDishes=emptyList<GeneratedDish>()
     private val assistantHistory=mutableListOf<AssistantMessage>()
     private fun rememberMessage(message:AssistantMessage){
         assistantHistory.add(message)
@@ -154,6 +156,9 @@ class MainActivity : Activity() {
         hero.addView(label("ChatGPT · умная корзина",24f,ink,true))
         hero.addView(label("Спроси о покупках, ценах, питании или блюдах. Запрос и необходимые данные корзины/каталога передаются OpenAI.",15f,gray))
         assistantHistory.takeLast(12).forEach{m->hero.addView(label((if(m.role=="user")"Ты: " else "ChatGPT: ")+m.text,16f,ink))}
+        if(draftDishes.isNotEmpty()){
+            hero.addView(link("Созданные блюда · "+draftDishes.size+"  ›"){tab=1;render()})
+        }
         val input=EditText(this).apply {
             setText(promptDraft);textSize=18f;hint="Например: что приготовить, чем заменить продукт, как сэкономить?"
             minLines=3;maxLines=6;gravity=Gravity.TOP
@@ -176,7 +181,7 @@ class MainActivity : Activity() {
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
         addButton(hero,if(assistantBusy)"ChatGPT думает…" else "Спросить ChatGPT",true){askAssistant()}
-        addButton(hero,"Новый диалог"){if(!assistantBusy){assistantHistory.clear();memory.clearHistory();render()}}
+        addButton(hero,"Новый диалог"){if(!assistantBusy){assistantHistory.clear();memory.clearHistory();draftDishes=emptyList();render()}}
         hero.addView(link("Мои предпочтения  ›"){if(!assistantBusy)memoryDialog()})
         addButton(hero,"Локальный подбор (без ChatGPT)") {
             try {
@@ -221,6 +226,7 @@ class MainActivity : Activity() {
                 runOnUiThread{
                     if(!isFinishing&&!isDestroyed){
                         rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text))
+                        if(answer.dishes.isNotEmpty())draftDishes=answer.dishes
                         assistantBusy=false;render()
                         val showBasket={answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)};Unit}
                         if(answer.preferenceProposal!=null&&answer.preferenceProposal!=preferences){
@@ -425,20 +431,32 @@ class MainActivity : Activity() {
 
     private fun recipeScreen() {
         val top=card(body)
-        val header=horizontal()
-        header.addView(label("$portions порц. на блюдо",15f,gray,true),LinearLayout.LayoutParams(0,-2,1f))
-        header.addView(link("Изменить"){planSettings()});top.addView(header)
-        for(r in recipes){
-            val c=card(body);val row=horizontal()
-            val info=vertical()
-            info.addView(label(r.name,18f,ink,true))
-            info.addView(label("${r.ingredients.size} ингредиентов · $portions порц.",15f,gray))
-            info.setOnClickListener{AlertDialog.Builder(this).setTitle(r.name).setMessage(r.ingredients.joinToString("\n"){"${it.name} ${(it.amount*portions+r.servings-1)/r.servings} ${it.unit}"}+"\n\n"+r.method).setPositiveButton("Закрыть",null).show()}
-            row.addView(info,LinearLayout.LayoutParams(0,-2,1f))
-            val plus=button("+",false){try{items=merge(items,r.ingredients,portions,r.servings);save();toast("Рецепт добавлен")}catch(e:Exception){toast(e.message?:"Ошибка количества")}}
-            plus.contentDescription="Добавить "+r.name
-            row.addView(plus,LinearLayout.LayoutParams(dp(56),dp(56)))
-            c.addView(row)
+        top.addView(label("Рецепты ChatGPT",23f,ink,true))
+        top.addView(label("Создавай любые блюда в диалоге. КБЖУ указаны на порцию; оценки не равны данным этикетки.",14f,gray))
+        addButton(top,"Придумать блюда",true){tab=3;promptDraft="";render()}
+        val saved=dishStore.read()
+        if(draftDishes.isNotEmpty()){
+            body.addView(label("Новые блюда",19f,ink,true))
+            for(d in draftDishes)renderDish(d,false)
+        }
+        body.addView(label("Сохранённые блюда",19f,ink,true))
+        if(saved.isEmpty())body.addView(label("Пока нет сохранённых рецептов.",15f,gray))
+        else for(d in saved.asReversed())renderDish(d,true)
+    }
+    private fun renderDish(d:GeneratedDish,saved:Boolean){
+        val c=card(body);val r=d.recipe
+        c.addView(label(r.name,20f,ink,true))
+        c.addView(label(r.servings.toString()+" порц. · "+r.ingredients.size+" ингредиентов",14f,gray))
+        c.addView(label(dishNutritionLabel(d),15f,green))
+        addButton(c,"Ингредиенты и приготовление"){
+            AlertDialog.Builder(this).setTitle(r.name)
+                .setMessage(r.ingredients.joinToString("\n"){it.name+" — "+it.amount+" "+it.unit}+"\n\n"+r.method+"\n\n"+dishNutritionLabel(d))
+                .setPositiveButton("Закрыть",null).show()
+        }
+        if(saved)addButton(c,"Удалить рецепт"){dishStore.write(dishStore.read().filterNot{it.recipe==r});render()}
+        else addButton(c,"Сохранить рецепт"){dishStore.write((dishStore.read().filterNot{it.recipe==r}+d).takeLast(60));draftDishes=draftDishes.filterNot{it.recipe==r};render()}
+        addButton(c,"Подобрать продукты через ChatGPT"){
+            tab=3;promptDraft="Подбери товары для блюда "+r.name+" на "+r.servings+" порций: "+r.ingredients.joinToString(", "){it.name+" "+it.amount+" "+it.unit}+". Проверь цены и предложи добавление к текущей корзине.";render()
         }
     }
     private fun catalogLabel():String {

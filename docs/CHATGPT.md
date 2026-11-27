@@ -19,3 +19,7 @@ The model can propose a complete replacement shopping list using validated quant
 ## Local context
 
 Recent 24 messages persist in device-local preferences (12 sent per request), plus an editable 4,000-character food/shopping profile. ChatGPT can propose a profile update only after a user asks to remember/forget something; confirmation is required. New chat clears history, not profile; clear-all removes both locally, not remote account data. Days, people, budget, shipping and calorie target are included in requests and saved. No access to existing ChatGPT account memory. Local storage is not separately encrypted. Live account behavior still requires Android testing.
+
+## Generated dishes and iterative optimization
+
+ChatGPT publishes structured dishes with serving count, ingredients, preparation and optional whole-ingredient estimated nutrition. Local arithmetic derives per-serving totals; actual cached product data and generic reference data take precedence over model estimates. Missing values remain unknown and estimates are labelled. The Recipes screen shows generated cards instead of the static recipe list; users can save up to 60 locally. Static recipes still exist only for the explicit offline planner. Quote tools return up to five locally ranked price alternatives; basket proposals return validated per-item costs, budget status and available nutrition, allowing the model to revise its selection. No globally optimal guarantee; no live inference verification yet.
