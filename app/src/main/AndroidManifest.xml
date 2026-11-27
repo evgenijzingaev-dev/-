@@ -8,6 +8,18 @@
         <provider android:name=".UpdateProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true"/>
         <activity android:name=".ChatGptSettingsActivity" android:exported="false"/>
         <activity android:name=".FamilyHealthActivity" android:exported="false"/>
+        <activity android:name=".HealthPrivacyActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE"/>
+            </intent-filter>
+        </activity>
+        <activity-alias android:name=".ViewHealthPermissionUsageActivity" android:targetActivity=".HealthPrivacyActivity"
+            android:exported="true" android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE"/>
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS"/>
+            </intent-filter>
+        </activity-alias>
         <activity android:name=".NutritionActivity" android:exported="false"/>
         <activity android:name=".CatalogSyncActivity" android:exported="false"/>
         <activity android:name=".CartTransferActivity" android:exported="false"/>
