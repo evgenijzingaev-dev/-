@@ -51,11 +51,11 @@ class CatalogSyncActivity:Activity(){
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(Color.rgb(244,247,244))}
         status=TextView(this).apply{setPadding(dp(12),dp(10),dp(12),dp(10));textSize=16f;text="Выбери адрес доставки на сайте. Затем нажми «Загрузить каталог». Вся доступная выдача будет загружаться независимо от рецептов."}
         root.addView(status)
-        start=Button(this).apply{text="Загрузить каталог через сайт";isAllCaps=false;setOnClickListener{begin()}}
+        start=Button(this).apply{text="Обновить каталог и цены";isAllCaps=false;setOnClickListener{if(apiBlocked())begin() else beginApi()}}
         stop=Button(this).apply{text="Остановить";isAllCaps=false;isEnabled=false;setOnClickListener{if(apiRunning){apiCancelled=true;status.text="Отмена запроса…";stop.isEnabled=false}else finishSync("Остановлено пользователем",false)}}
         apiButton=Button(this).apply{text="Загрузить через API (эксперимент)";isAllCaps=false;setOnClickListener{beginApi()}}
-        root.addView(start);root.addView(stop);if(!apiBlocked())root.addView(apiButton)
-        if(apiBlocked())status.text="Прямой API недоступен. Выбери адрес доставки и загрузи каталог через сайт."
+        root.addView(start);root.addView(stop)
+        if(apiBlocked())status.text="Выбери адрес доставки и нажми «Обновить каталог и цены». Используется доступный каталог сайта."
         web=WebView(this)
         web.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;allowFileAccess=false;allowContentAccess=false;mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW;setSupportMultipleWindows(false);javaScriptCanOpenWindowsAutomatically=false}
         CookieManager.getInstance().setAcceptCookie(true)
@@ -115,9 +115,8 @@ class CatalogSyncActivity:Activity(){
                         settings.edit().putBoolean("api_forbidden",true).apply()
                         endApi("Прямой API недоступен (HTTP 403). Прежняя база сохранена.")
                         apiButton.visibility=android.view.View.GONE
-                        AlertDialog.Builder(this).setTitle("Загрузить каталог через сайт?")
-                            .setMessage("Сервер отказал в прямом доступе. Можно загрузить доступный ассортимент из открытого каталога. Повторять отклонённый API-запрос не будем.")
-                            .setNegativeButton("Отмена",null).setPositiveButton("Через сайт"){_,_->begin()}.show()
+                        if(!apiCancelled&&catalogPage(web.url.orEmpty()))begin()
+                        else status.text="API недоступен. Открой каталог сайта и повтори обновление."
                     }else endApi((e.message?:"Ошибка API")+". Прежняя база сохранена. Можно использовать загрузку через сайт.")
                 }}
             }.start()
@@ -192,12 +191,12 @@ class CatalogSyncActivity:Activity(){
             val list=if(atRoot())null else j.optJSONArray("products")
             if(list!=null)for(i in 0 until list.length()){
                 val o=list.optJSONObject(i)?:continue
-                val url=o.optString("url");val text=o.optString("text").take(1200)
+                val url=o.optString("url");val text=o.optString("text").take(1200);val photo=publicImageUrl(o.optString("image"))
                 if(validTransferUrl(url)&&text.isNotBlank()){
                     val k=Uri.parse(url).path.orEmpty().trimEnd('/')
                     if(pageProducts.add(k))added++
                     val old=products[k]
-                    if(old==null||displayCatalogPrice(text)!=null||displayCatalogPrice(old.text)==null)products[k]=CatalogEntry(url,text)
+                    if(old==null||displayCatalogPrice(text)!=null||displayCatalogPrice(old.text)==null)products[k]=CatalogEntry(url,text,imageUrl=photo.ifBlank{old?.imageUrl.orEmpty()})
                 }
             }
             rounds++
@@ -289,7 +288,15 @@ class CatalogSyncActivity:Activity(){
                     if(v.includes('₽')&&v.length<=1200){t=v;break;}
                   }
                 }
-                if(t.length>0&&t.length<=1200)products.set(u.pathname,{url:u.origin+u.pathname,text:t});
+                if(t.length>0&&t.length<=1200){
+                  let img=a.querySelector('img'), p=a.parentElement;
+                  for(let i=0;!img&&p&&i<3;i++,p=p.parentElement){
+                    const keys=new Set([...p.querySelectorAll('a[href*="/product/"]')].map(b=>new URL(b.href,location.href).pathname));
+                    if(keys.size!==1)break;
+                    img=p.querySelector('img');
+                  }
+                  products.set(u.pathname,{url:u.origin+u.pathname,text:t,image:img?.currentSrc||img?.src||''});
+                }
               }
               const more=[...document.querySelectorAll('button,[role="button"]')].filter(b=>visible(b)&&!b.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((b.innerText||'').trim())).length===1;
               const root=document.scrollingElement||document.documentElement;
