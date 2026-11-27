@@ -1,104 +1,52 @@
-name: Android APK
-on: [push, workflow_dispatch]
+name: Proposal dialog emulator QA
+on:
+  push:
+    branches: [qa/proposal-dialog-fd62495]
 permissions:
   contents: read
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  proposal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: Install required Android SDK packages
-        shell: bash
-        run: |
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
-          fi
-          test -x "$SDKMANAGER"
-          "$SDKMANAGER" --version
-          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: SmartBasket-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-
-  publish:
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check signing configuration
-        id: config
+          cache-disabled: true
+      - name: Start clean Android emulator with KVM
         shell: bash
-        env:
-          SB_KEY: ${{ secrets.SMARTBASKET_SIGNING }}
-        run: |
-          if [ -z "$SB_KEY" ]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Signed APK publication is not configured; set SMARTBASKET_SIGNING."
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/setup-java@v4
-        if: steps.config.outputs.ready == 'true'
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        if: steps.config.outputs.ready == 'true'
-        with:
-          gradle-version: '8.7'
-      - name: Build unsigned release
-        if: steps.config.outputs.ready == 'true'
-        shell: bash
-        run: |
-          SDKMANAGER="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
-          fi
-          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools'
-          gradle --no-daemon :app:assembleRelease
-      - name: Sign and publish immutable APK
-        if: steps.config.outputs.ready == 'true'
-        shell: bash
-        env:
-          SB_KEY: ${{ secrets.SMARTBASKET_SIGNING }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          umask 077
-          VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)"
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          TAG="v$VERSION"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::Release $TAG already exists. Bump versionName and versionCode for the next release."
-            exit 0
-          fi
-          DIR="$(mktemp -d)"
-          trap 'rm -rf "$DIR"' EXIT
-          export SB_PASS="${SB_KEY%%:*}"
-          echo "::add-mask::$SB_PASS"
-          printf '%s' "${SB_KEY#*:}" | base64 -d > "$DIR/key.p12"
-          unset SB_KEY
-          TOOLS="$ANDROID_HOME/build-tools/34.0.0"
-          "$TOOLS/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk "$DIR/aligned.apk"
-          "$TOOLS/apksigner" sign --ks "$DIR/key.p12" --ks-type PKCS12 --ks-key-alias smartbasket --ks-pass env:SB_PASS --key-pass env:SB_PASS --out "$DIR/SmartBasket.apk" "$DIR/aligned.apk"
-          "$TOOLS/apksigner" verify --verbose --print-certs "$DIR/SmartBasket.apk" > "$DIR/verify.txt"
-          grep -iq 'Signer #1 certificate SHA-256 digest: 3f6dae2efe6ddddd490a71185d5d8fce910e40a39edb8e549b15a6d4b518000f' "$DIR/verify.txt"
-          unset SB_PASS
-          mkdir -p dist
-          cp "$DIR/SmartBasket.apk" dist/SmartBasket.apk
-          (cd dist && sha256sum SmartBasket.apk > SmartBasket.apk.sha256)
-          gh release create "$TAG" dist/SmartBasket.apk dist/SmartBasket.apk.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "SmartBasket $VERSION" --notes "Подписанное обновление SmartBasket $VERSION." --latest
+          test -c /dev/kvm
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          image='system-images;android-34;default;x86_64'
+          "$tools/sdkmanager" 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools' emulator "$image"
+          echo no | "$tools/avdmanager" create avd -n proposal -k "$image" --force
+          "$ANDROID_HOME/emulator/emulator" -avd proposal -accel on -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
+          timeout 360 bash -c 'adb wait-for-device; until adb shell getprop sys.boot_completed | grep -q 1; do sleep 2; done' || { tail -40 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          adb shell wm size 720x1280
+          adb shell wm density 320
+          adb shell input keyevent 82
+          for setting in window_animation_scale transition_animation_scale animator_duration_scale; do adb shell settings put global "$setting" 0; done
+      - name: Run and verify one instrumentation case
+        run: |
+          gradle --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=ru.smartbasket.app.ProposalDialogTest
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          cases = [case for path in glob.glob("app/build/outputs/androidTest-results/connected/**/*.xml", recursive=True) for case in ET.parse(path).iter("testcase")]
+          assert len(cases) == 1, f"Expected one result, found {len(cases)}"
+          case = cases[0]
+          assert case.get("classname") == "ru.smartbasket.app.ProposalDialogTest"
+          assert case.get("name") == "scrollToLastNutritionLineThenDeclineAndApply"
+          assert all(case.find(tag) is None for tag in ("skipped", "error", "failure"))
+          print("PASS:", case.attrib)
+          PY
