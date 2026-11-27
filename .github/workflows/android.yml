@@ -30,3 +30,75 @@ jobs:
           name: SmartBasket-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check signing configuration
+        id: config
+        shell: bash
+        env:
+          SB_KEY: ${{ secrets.SMARTBASKET_SIGNING }}
+        run: |
+          if [ -z "$SB_KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Signed APK publication is not configured; set SMARTBASKET_SIGNING."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-java@v4
+        if: steps.config.outputs.ready == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.config.outputs.ready == 'true'
+        with:
+          gradle-version: '8.7'
+      - name: Build unsigned release
+        if: steps.config.outputs.ready == 'true'
+        shell: bash
+        run: |
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n 1)"
+          fi
+          "$SDKMANAGER" 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools'
+          gradle --no-daemon :app:assembleRelease
+      - name: Sign and publish immutable APK
+        if: steps.config.outputs.ready == 'true'
+        shell: bash
+        env:
+          SB_KEY: ${{ secrets.SMARTBASKET_SIGNING }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          TAG="v$VERSION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists. Bump versionName and versionCode for the next release."
+            exit 0
+          fi
+          DIR="$(mktemp -d)"
+          trap 'rm -rf "$DIR"' EXIT
+          export SB_PASS="${SB_KEY%%:*}"
+          echo "::add-mask::$SB_PASS"
+          printf '%s' "${SB_KEY#*:}" | base64 -d > "$DIR/key.p12"
+          unset SB_KEY
+          TOOLS="$ANDROID_HOME/build-tools/34.0.0"
+          "$TOOLS/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk "$DIR/aligned.apk"
+          "$TOOLS/apksigner" sign --ks "$DIR/key.p12" --ks-type PKCS12 --ks-key-alias smartbasket --ks-pass env:SB_PASS --key-pass env:SB_PASS --out "$DIR/SmartBasket.apk" "$DIR/aligned.apk"
+          "$TOOLS/apksigner" verify --verbose --print-certs "$DIR/SmartBasket.apk" > "$DIR/verify.txt"
+          grep -iq 'Signer #1 certificate SHA-256 digest: 3f6dae2efe6ddddd490a71185d5d8fce910e40a39edb8e549b15a6d4b518000f' "$DIR/verify.txt"
+          unset SB_PASS
+          mkdir -p dist
+          cp "$DIR/SmartBasket.apk" dist/SmartBasket.apk
+          (cd dist && sha256sum SmartBasket.apk > SmartBasket.apk.sha256)
+          gh release create "$TAG" dist/SmartBasket.apk dist/SmartBasket.apk.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "SmartBasket $VERSION" --notes "Подписанное обновление SmartBasket $VERSION." --latest

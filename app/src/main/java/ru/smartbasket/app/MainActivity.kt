@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private var budget = 300000L
     private var delivery = 0L
     private var portions = 3
+    private val updater by lazy { AppUpdater(this) }
     private var tab = 3
     private var days = 3
     private var promptDraft = ""
@@ -39,6 +40,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         load(); render(); acceptIntent(intent)
+        updater.check(false)
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); acceptIntent(intent) }
     private fun acceptIntent(i: Intent?) {
@@ -253,6 +255,9 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("Каталог магазина").setView(wrap).setPositiveButton("Закрыть",null).show()
     }
     private fun storeScreen() {
+        val updates=card(body);updates.addView(label("Версия приложения: "+updater.installedVersion(),17f,ink,true))
+        addButton(updates,"Проверить обновления"){updater.check(true)}
+        addButton(updates,"Установить скачанное обновление"){updater.installDownloaded()}
         val catalog=card(body);catalog.addView(label("Каталог и цены",22f,green,true));catalog.addView(label(catalogLabel(),14f,gray))
         addButton(catalog,"Загрузить / обновить весь каталог",true){syncCatalog()}
         addButton(catalog,"Поиск в загруженных товарах"){catalogBrowser()}
@@ -373,5 +378,6 @@ class MainActivity : Activity() {
             else nextGuided()
         }
     }
+    override fun onResume(){super.onResume();updater.resumeInstall()}
     private fun toast(s:String){Toast.makeText(this,s,Toast.LENGTH_SHORT).show()}
 }
