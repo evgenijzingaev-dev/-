@@ -77,7 +77,7 @@ class StoreActivity : Activity() {
         // Read only currently rendered product links. No cookies, credentials, API tokens or hidden state.
         web.evaluateJavascript("""
             (function(){
-              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!/^\\/(catalog|product)\\//.test(location.pathname))return '[]';
+              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname.startsWith("/catalog/")||location.pathname.startsWith("/product/")))return '[]';
               var found=[], seen=new Set();
               for(var a of document.querySelectorAll('a[href]')){
                 var u=new URL(a.href,location.href);
