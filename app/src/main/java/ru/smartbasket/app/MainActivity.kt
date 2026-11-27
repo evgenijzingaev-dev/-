@@ -170,7 +170,10 @@ class MainActivity : Activity() {
         c.addView(label((if(s.complete) "Итого" else "Известный минимум")+": "+rub(s.totalKnown),20f,if(s.over) Color.rgb(175,46,32) else ink,true))
         c.addView(label(when { s.over -> "Превышение бюджета минимум на ${rub(s.totalKnown-budget)}"; !s.complete -> "Без цены/фасовки: ${s.unknown}. Бюджет пока не подтверждён."; else -> "Остаток бюджета: ${rub(budget-s.totalKnown)}" },14f,gray))
         c.addView(label("Доставка (введено вручную): ${rub(delivery)}",13f,gray))
-        if(items.any { it.need>0 && !it.checked }) addButton(c,"Подобрать товары в магазине",true) { startGuided() }
+        if(items.any { it.need>0 && !it.checked }) {
+            addButton(c,"Автоматически подобрать цены",true){batchQuote()}
+            addButton(c,"Открывать товары по очереди"){startGuided()}
+        }
         addButton(c,"Бюджет и доставка") { budgetDialog() }
         val tools=horizontal()
         tools.addView(button("＋ Продукт"){addDialog()},LinearLayout.LayoutParams(0,dp(48),1f))
@@ -241,6 +244,13 @@ class MainActivity : Activity() {
     private fun listText()=items.filter{it.need>0 && !it.checked}.joinToString("\n"){"${it.name} — ${it.need} ${it.unit}"}.ifEmpty{"Список пуст"}
     private fun share(){startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,listText()),"Поделиться покупками"))}
     private fun copy(s:String){(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Покупки",s));toast("Скопировано")}
+    private fun batchQuote(){
+        val arr=JSONArray()
+        for(i in items.filter{it.need>0&&!it.checked})arr.put(JSONObject().put("key",key(i.name,i.unit)).put("name",i.name).put("unit",i.unit).put("amount",i.need))
+        if(arr.length()>100){toast("Максимум 100 позиций за один подбор");return}
+        val other=items.filter{it.checked}.sumOf{it.cost?:0L}
+        startActivityForResult(Intent(this,BatchQuoteActivity::class.java).putExtra("needs",arr.toString()).putExtra("budget",budget).putExtra("delivery",delivery).putExtra("other",other),703)
+    }
     private fun startGuided() {
         if(summarize(items,budget,delivery).over){toast("Известные расходы уже выше бюджета. Измени цены или бюджет.");return}
         AlertDialog.Builder(this).setTitle("Сбор покупок").setMessage("Пройдём по непокупленным ингредиентам. Выбирай товары в магазине и подтверждай цену. Сбор не оплачивает заказ, не очищает существующую корзину и не считает товары добавленными без проверки.").setNegativeButton("Отмена",null).setPositiveButton("Начать"){_,_->
@@ -265,6 +275,21 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==703){
+            if(resultCode!=RESULT_OK)return
+            try{
+                val a=JSONArray(data?.getStringExtra("quotes")?:"[]")
+                val offers=(0 until a.length()).map{a.getJSONObject(it)}.associateBy{it.getString("key")}
+                items=items.map{i->
+                    val o=offers[key(i.name,i.unit)]
+                    val q=o?.optLong("pack",0)?:0L
+                    val p=o?.optLong("price",-1)?:-1L
+                    if(o==null)i else if(q in 1..10_000_000&&p in 0..100_000_000)i.copy(pack=q,price=p)else i.copy(price=null)
+                }
+                tab=0;update();toast("Цены перенесены. Сверь итог магазина.")
+            }catch(_:Exception){toast("Не удалось прочитать результаты")}
+            return
+        }
         if(requestCode==702){
             if(resultCode==RESULT_OK){promptDraft=data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty();tab=3;render()}
             return
