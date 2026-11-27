@@ -43,6 +43,7 @@ class CatalogSyncActivity:Activity(){
     private var retryCount=0
     private var lastMotion=""
     private var lastMotionAt=0L
+    private var recoveryStage=0
     private var callbackWatchdog:Runnable?=null
     private var lastScan="Сканирование ещё не началось"
     private var apiFailure=""
@@ -171,7 +172,7 @@ class CatalogSyncActivity:Activity(){
     }
     private fun openCurrent(){
         rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L
-        lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime()
+        lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime();recoveryStage=0
         callbackWatchdog=null
         status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
         val g=generation;web.loadUrl(current)
@@ -214,7 +215,7 @@ class CatalogSyncActivity:Activity(){
         if(reading||!active||g!=generation)return
         if(!samePage(web.url.orEmpty(),current)){
             lastScan="Ожидание страницы каталога";status.text=lastScan
-            if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=45000L)recoverStalled(lastScan) else schedule(g,3000)
+            if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,3000)
             return
         }
         reading=true;watchCallback(g)
@@ -227,7 +228,7 @@ class CatalogSyncActivity:Activity(){
                 if(missingStoreSince==0L)missingStoreSince=now
                 lastScan=if(j==null) "Скрипт не вернул данные страницы" else "Страница ещё не подтвердила магазин"
                 status.text=lastScan
-                if(now-missingStoreSince>=25000L)recoverStalled(lastScan) else schedule(g,2500)
+                if(now-missingStoreSince>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,2500)
                 return@evaluateJavascript
             }
             if(actual!=store){finishSync("Магазин доставки изменился. Выгрузка остановлена.",false);return@evaluateJavascript}
@@ -262,7 +263,7 @@ class CatalogSyncActivity:Activity(){
             val pageState=j.optString("pageState")
             val now=android.os.SystemClock.elapsedRealtime()
             val motion=pageState+"|"+j.optInt("scrollTop")
-            if(added>0||motion!=lastMotion){lastMotion=motion;lastMotionAt=now}
+            if(added>0||motion!=lastMotion){lastMotion=motion;lastMotionAt=now;recoveryStage=0}
             val idle=now-lastMotionAt
             if(added>0||pageState!=lastPageState||j.optBoolean("loading")||!j.optBoolean("bottom")||j.optBoolean("more")){
                 lastPageState=pageState;stableSince=now
@@ -270,7 +271,6 @@ class CatalogSyncActivity:Activity(){
             status.text="Категорий обработано: "+done+" · найдено товаров: "+products.size+" · в очереди: "+queue.size+
                 "\n"+(if(j.optBoolean("loading"))"Ожидание подгрузки" else if(j.optBoolean("bottom"))"Проверка конца категории" else "Прокрутка")+
                 " · без изменений "+(idle/1000)+" с"
-            if(idle>=45000L){recoverStalled("Каталог не меняется 45 секунд");return@evaluateJavascript}
             if(products.size>=30000||rounds>=600){
                 failed++
                 if(atRoot())enqueueRootSections() else done++
@@ -288,11 +288,26 @@ class CatalogSyncActivity:Activity(){
                 }
                 next();return@evaluateJavascript
             }
-            if(j.optBoolean("loading")||(j.optBoolean("bottom")&&!j.optBoolean("more"))){schedule(g,2500);return@evaluateJavascript}
+            val quietEnd=j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")
+            when(CatalogStallPolicy.action(idle,recoveryStage,quietEnd)){
+                3->{recoverStalled("Каталог не меняется 20 секунд");return@evaluateJavascript}
+                2,1->{
+                    recoveryStage=CatalogStallPolicy.action(idle,recoveryStage,quietEnd)
+                    status.text="Восстановление прокрутки "+recoveryStage+"/2 · товаров "+products.size
+                    reading=true;watchCallback(g)
+                    val script=if(recoveryStage==1)advanceScript else retryScrollScript
+                    web.evaluateJavascript(script){_ ->
+                        if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
+                        clearCallbackWatchdog();reading=false;schedule(g,1000)
+                    }
+                    return@evaluateJavascript
+                }
+            }
+            if(j.optBoolean("loading")||quietEnd||(j.optBoolean("more")&&recoveryStage>0)){schedule(g,1000);return@evaluateJavascript}
             reading=true;watchCallback(g)
             web.evaluateJavascript(advanceScript){_ ->
                 if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
-                clearCallbackWatchdog();reading=false;schedule(g,1800)
+                clearCallbackWatchdog();reading=false;schedule(g,1000)
             }
         }
     }
@@ -402,11 +417,28 @@ class CatalogSyncActivity:Activity(){
               return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],cardCount:cards.length,more:bottom&&moreButtons.length===1,loading,pageState,scrollTop:Math.round(scroll.scrollTop),bottom});
             })()
         """.trimIndent()
+        private val retryScrollScript="""
+            (function(){
+              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
+              ${scrollHelpers}
+              if(!bottom){
+                scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+Math.max(80,Math.floor(scroll.clientHeight*0.75)));
+                return true;
+              }
+              if(moreButtons.length===1&&!loading){moreButtons[0].click();return true;}
+              const position=scroll.scrollTop, page=location.href;
+              if(position>0){
+                scroll.scrollTop=Math.max(0,position-Math.max(40,Math.floor(scroll.clientHeight*0.25)));
+                setTimeout(function(){if(location.href===page&&scroll.isConnected)scroll.scrollTop=position;},250);
+              }
+              return true;
+            })()
+        """.trimIndent()
         private val advanceScript="""
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
               ${scrollHelpers}
-              if(moreButtons.length===1&&bottom){moreButtons[0].click();return true;}
+              if(moreButtons.length===1&&bottom&&!loading){moreButtons[0].click();return true;}
               if(!bottom){
                 const step=Math.max(80,Math.floor(scroll.clientHeight*0.75));
                 scroll.scrollTop=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+step);
