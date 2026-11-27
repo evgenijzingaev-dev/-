@@ -26,3 +26,26 @@ fun portionNutrition(total:Double,totalGrams:Int,portionGrams:Int):Double{
     require(total.isFinite() && total>=0 && totalGrams>0 && portionGrams in 0..totalGrams)
     return total*portionGrams/totalGrams
 }
+
+/** Strict tool output: exactly seven days, three meals each, one portion for each member. */
+fun parseFamilyWeek(args:JSONObject, memberIds:List<String>):List<WeekMeal>{
+    require(memberIds.size in 1..12 && memberIds.distinct().size==memberIds.size)
+    val rows=args.getJSONArray("meals")
+    require(rows.length()==21)
+    val meals=(0 until rows.length()).map{i->
+        val row=rows.getJSONObject(i)
+        val portions=row.getJSONArray("portions")
+        require(portions.length()==memberIds.size)
+        val mapped=linkedMapOf<String,Int>()
+        for(j in 0 until portions.length()){
+            val p=portions.getJSONObject(j)
+            val number=p.getInt("member_number")
+            val grams=p.getInt("grams")
+            require(number in 1..memberIds.size && grams in 1..2000)
+            require(mapped.put(memberIds[number-1],grams)==null)
+        }
+        WeekMeal(row.getInt("day"),row.getInt("slot"),row.getString("name").trim(),mapped).also{require(it.valid())}
+    }
+    require(meals.map{it.day to it.slot}.distinct().size==21)
+    return meals.sortedWith(compareBy<WeekMeal>{it.day}.thenBy{it.slot})
+}
