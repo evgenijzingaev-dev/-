@@ -39,6 +39,9 @@ class CatalogSyncActivity:Activity(){
     private var done=0
     private var failed=0
     private var reading=false
+    private var missingStoreSince=0L
+    private var lastScan="Сканирование ещё не началось"
+    private var apiFailure=""
     @Volatile private var apiCancelled=false
     private var apiRunning=false
     private lateinit var apiButton:Button
@@ -53,8 +56,8 @@ class CatalogSyncActivity:Activity(){
         root.addView(status)
         start=Button(this).apply{text="Обновить каталог и цены";isAllCaps=false;setOnClickListener{if(apiBlocked())begin() else beginApi()}}
         stop=Button(this).apply{text="Остановить";isAllCaps=false;isEnabled=false;setOnClickListener{if(apiRunning){apiCancelled=true;status.text="Отмена запроса…";stop.isEnabled=false}else finishSync("Остановлено пользователем",false)}}
-        apiButton=Button(this).apply{text="Загрузить через API (эксперимент)";isAllCaps=false;setOnClickListener{beginApi()}}
-        root.addView(start);root.addView(stop)
+        apiButton=Button(this).apply{text="Загрузить через сайт";isAllCaps=false;setOnClickListener{begin()}}
+        root.addView(start);root.addView(stop);if(!apiBlocked())root.addView(apiButton)
         if(apiBlocked())status.text="Выбери адрес доставки и нажми «Обновить каталог и цены». Используется доступный каталог сайта."
         web=WebView(this)
         web.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;allowFileAccess=false;allowContentAccess=false;mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW;setSupportMultipleWindows(false);javaScriptCanOpenWindowsAutomatically=false}
@@ -114,10 +117,13 @@ class CatalogSyncActivity:Activity(){
                     if(e is CatalogHttpException&&e.status==403){
                         settings.edit().putBoolean("api_forbidden",true).apply()
                         endApi("Прямой API недоступен (HTTP 403). Прежняя база сохранена.")
-                        apiButton.visibility=android.view.View.GONE
+                        apiFailure="API HTTP 403"
                         if(!apiCancelled&&catalogPage(web.url.orEmpty()))begin()
                         else status.text="API недоступен. Открой каталог сайта и повтори обновление."
-                    }else endApi((e.message?:"Ошибка API")+". Прежняя база сохранена. Можно использовать загрузку через сайт.")
+                    }else {
+                        apiFailure=if(e is CatalogHttpException) "API HTTP "+e.status else "API: "+e.javaClass.simpleName
+                        endApi(apiFailure+". Прежняя база сохранена. Можно использовать кнопку «Загрузить через сайт».")
+                    }
                 }}
             }.start()
         }
@@ -138,7 +144,7 @@ class CatalogSyncActivity:Activity(){
     }
     private fun catalogPage(raw:String):Boolean{
         val u=Uri.parse(raw)
-        return officialStoreUrl(u)&&u.host in listOf("5ka.ru","www.5ka.ru")&&u.path.orEmpty().startsWith("/catalog/")&&u.query==null
+        return officialStoreUrl(u)&&u.host in listOf("5ka.ru","www.5ka.ru")&&(u.path=="/catalog"||u.path.orEmpty().startsWith("/catalog/"))&&u.query==null
     }
     private fun samePage(a:String,b:String)=catalogPage(a)&&Uri.parse(a).path.orEmpty().trimEnd('/')==Uri.parse(b).path.orEmpty().trimEnd('/')
     private fun enqueue(raw:String){
@@ -156,7 +162,7 @@ class CatalogSyncActivity:Activity(){
     private fun next(){
         generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
         if(queue.isEmpty()){finishSync("Доступные категории обработаны",true);return}
-        current=queue.removeFirst();rounds=0;stableSince=0L;lastPageState="";pageProducts.clear()
+        current=queue.removeFirst();rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L;pageProducts.clear()
         status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
         val g=generation;web.loadUrl(current)
         handler.postDelayed({if(active&&generation==g){failed++;if(atRoot())enqueueRootSections() else done++;next()}},360000)
@@ -169,13 +175,25 @@ class CatalogSyncActivity:Activity(){
     }
     private fun read(g:Int){
         if(reading||!active||g!=generation)return
-        if(!samePage(web.url.orEmpty(),current)){schedule(g,3000);return}
+        if(!samePage(web.url.orEmpty(),current)){lastScan="Ожидание страницы каталога";status.text=lastScan;schedule(g,3000);return}
         reading=true
         web.evaluateJavascript(scanScript){raw->
             if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
             val j=decode(raw);reading=false
-            if(j==null||j.optString("store")!=store){finishSync("Не удалось подтвердить тот же магазин доставки. Выгрузка остановлена.",false);return@evaluateJavascript}
+            val actual=j?.optString("store").orEmpty()
+            if(actual.isBlank()){
+                val now=android.os.SystemClock.elapsedRealtime()
+                if(missingStoreSince==0L)missingStoreSince=now
+                lastScan=if(j==null) "Скрипт не вернул данные страницы" else "Страница ещё не подтвердила магазин"
+                status.text=lastScan
+                if(now-missingStoreSince>=25000L)finishSync(lastScan,false) else schedule(g,2500)
+                return@evaluateJavascript
+            }
+            if(actual!=store){finishSync("Магазин доставки изменился. Выгрузка остановлена.",false);return@evaluateJavascript}
+            missingStoreSince=0L
+            if(j==null)return@evaluateJavascript
             val links=j.optJSONArray("categories")
+            lastScan="Ссылок категорий: "+(links?.length()?:0)+" · распознано основных: "+rootSections.size+" · карточек на странице: "+j.optInt("cardCount")+" · прочитано карточек: "+(j.optJSONArray("products")?.length()?:0)
             var added=0
             if(atRoot()&&links!=null)for(i in 0 until links.length()){
                 val link=links.optJSONObject(i)?:continue
@@ -215,6 +233,7 @@ class CatalogSyncActivity:Activity(){
             // Also scroll the root catalog: categories can load below banners.
             if(now-stableSince>=12000L&&j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")){
                 if(atRoot()){
+                    if(rootSections.isEmpty()){finishSync("Не найдены основные категории каталога",false);return@evaluateJavascript}
                     enqueueRootSections()
                 }else{
                     if(pageProducts.isEmpty())failed++
@@ -235,7 +254,14 @@ class CatalogSyncActivity:Activity(){
         val count=products.size
         val priced=products.values.count{displayCatalogPrice(it.text)!=null}
         status.text=reason+". Найдено "+count+" товаров, цен "+priced+"."
-        if(count==0){AlertDialog.Builder(this).setTitle("Каталог не обновлён").setMessage(reason+". Прежняя база сохранена.").setPositiveButton("ОК",null).show();return}
+        if(count==0||priced==0){
+            val report=reason+"\n"+apiFailure+"\n"+lastScan+"\nОсновных категорий: "+rootSections.size+"\nТоваров: "+count+" · цен: "+priced+"\nПрежняя база сохранена."
+            AlertDialog.Builder(this).setTitle("Каталог не обновлён").setMessage(report)
+                .setNeutralButton("Копировать отчёт"){_,_->
+                    val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("SmartBasket",report))
+                }.setPositiveButton("ОК",null).show();return
+        }
         val snapshot=CatalogSnapshot(store,System.currentTimeMillis(),done,failed+(if(ended)0 else 1),products.values.toList())
         val previous=LocalCatalog(this).read()
         if(snapshot.failed>0&&previous!=null&&previous.store==snapshot.store&&previous.entries.size>snapshot.entries.size){
@@ -264,7 +290,7 @@ class CatalogSyncActivity:Activity(){
         private val storeScript="""(function(){try{if(!['5ka.ru','www.5ka.ru'].includes(location.hostname))return '';const x=JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}');return String(x.selectedStore?.sapCode||'');}catch(e){return '';}})()"""
         private val scanScript="""
             (function(){
-              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!location.pathname.startsWith('/catalog/'))return '{}';
+              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return '{}';
               let store='';try{store=String(JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}').selectedStore?.sapCode||'');}catch(e){}
               const categories=new Map(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
               for(const a of document.querySelectorAll('a[href]')){
@@ -303,12 +329,12 @@ class CatalogSyncActivity:Activity(){
               const cards=document.querySelectorAll('a[href*="/product/"]');
               const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible);
               const pageState=cards.length+'|'+root.scrollHeight+'|'+(cards.length?cards[cards.length-1].href:'');
-              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],more,loading,pageState,bottom:root.scrollTop+root.clientHeight>=root.scrollHeight-20});
+              return JSON.stringify({store,categories:[...categories.values()],products:[...products.values()],cardCount:cards.length,more,loading,pageState,bottom:root.scrollTop+root.clientHeight>=root.scrollHeight-20});
             })()
         """.trimIndent()
         private val advanceScript="""
             (function(){
-              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!location.pathname.startsWith('/catalog/'))return false;
+              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
               const b=[...document.querySelectorAll('button,[role="button"]')].filter(x=>x.getClientRects().length>0&&!x.disabled&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)$/i.test((x.innerText||'').trim()));
               if(b.length===1){b[0].click();return true;}
               window.scrollBy(0,Math.max(300,window.innerHeight*0.85));return true;
