@@ -317,6 +317,7 @@ class MainActivity : Activity() {
         members.forEachIndexed{i,m->
             panel.addView(link(m.name+" · "+m.age+" лет  ›"){d.dismiss();editFamily(i)})
             m.maintenance()?.let{panel.addView(label("Ориентир поддержания веса: "+it+" ккал/сутки",14f,gray))}
+            m.macros()?.let{panel.addView(label("Пример БЖУ: "+it.protein+" / "+it.fat+" / "+it.carbs+" г в сутки",14f,gray))}
             panel.addView(link("Дневник питания"){d.dismiss();foodLogDialog(i)})
         }
         if(members.size<12)addButton(panel,"Добавить члена семьи"){d.dismiss();editFamily(null)}
