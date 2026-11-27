@@ -76,18 +76,18 @@ class MainActivity : Activity() {
     private fun gap(parent: LinearLayout, height: Int=10) { parent.addView(View(this),LinearLayout.LayoutParams(1,dp(height))) }
     private fun card(parent: LinearLayout): LinearLayout = vertical().apply { background=rounded(Color.WHITE); setPadding(dp(16),dp(14),dp(16),dp(14)); parent.addView(this,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(10) }) }
     private fun button(s: String, primary: Boolean=false, action: ()->Unit) = Button(this).apply {
-        text=s; textSize=14f; isAllCaps=false; letterSpacing=0f
+        text=s; textSize=17f; isAllCaps=false; letterSpacing=0f
         setTypeface(null,Typeface.BOLD); setTextColor(if(primary) Color.WHITE else green)
         background=android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x18000000),rounded(if(primary)green else soft,14),null)
-        stateListAnimator=null; minHeight=dp(48); minimumHeight=dp(48); minWidth=0;minimumWidth=0
-        setPadding(dp(10),dp(5),dp(10),dp(5)); setOnClickListener { action() }
+        stateListAnimator=null; minHeight=dp(if(primary)56 else 52); minimumHeight=dp(if(primary)56 else 52); minWidth=0;minimumWidth=0
+        setPadding(dp(14),dp(10),dp(14),dp(10)); setOnClickListener { action() }
     }
     private fun addButton(p: LinearLayout, s:String, primary:Boolean=false, action:()->Unit) {
         p.addView(button(s,primary,action),LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(8) })
     }
     private fun link(s:String,action:()->Unit)=TextView(this).apply{
-        text=s;textSize=14f;setTextColor(green);setTypeface(null,Typeface.BOLD);gravity=Gravity.CENTER_VERTICAL
-        minHeight=dp(48);setPadding(dp(10),dp(4),dp(10),dp(4))
+        text=s;textSize=16f;setTextColor(green);setTypeface(null,Typeface.BOLD);gravity=Gravity.CENTER_VERTICAL
+        minHeight=dp(52);setPadding(dp(10),dp(8),dp(10),dp(8))
         background=android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x16000000),null,rounded(Color.WHITE,12))
         isClickable=true;isFocusable=true;setOnClickListener{action()}
     }
@@ -100,7 +100,7 @@ class MainActivity : Activity() {
     private fun more(p:LinearLayout,description:String,vararg actions:Pair<String,()->Unit>){
         val v=link("⋯"){};v.contentDescription=description;v.gravity=Gravity.CENTER;v.textSize=24f
         v.setOnClickListener{menu(v,*actions)}
-        p.addView(v,LinearLayout.LayoutParams(dp(48),dp(48)))
+        p.addView(v,LinearLayout.LayoutParams(dp(52),-2))
     }
     private fun divider(p:LinearLayout){p.addView(View(this).apply{setBackgroundColor(Color.rgb(232,235,230))},LinearLayout.LayoutParams(-1,dp(1)))}
     private fun render() {
@@ -130,8 +130,9 @@ class MainActivity : Activity() {
                 gravity=Gravity.CENTER;background=rounded(if(tab==i)soft else Color.TRANSPARENT,18)
             }
             v.addView(icon,LinearLayout.LayoutParams(dp(58),dp(30)))
-            v.addView(label(title,12f,if(tab==i)green else gray,tab==i))
-            tabs.addView(v,LinearLayout.LayoutParams(0,dp(58),1f))
+            v.addView(label(title,14f,if(tab==i)green else gray,tab==i).apply{gravity=Gravity.CENTER;maxLines=2})
+            v.minimumHeight=dp(68)
+            tabs.addView(v,LinearLayout.LayoutParams(0,-1,1f))
         }
         root.addView(tabs)
         setContentView(root)
@@ -142,7 +143,7 @@ class MainActivity : Activity() {
         hero.addView(label("Что будем готовить?",24f,ink,true))
         hero.addView(label("Меню и покупки в одном месте",15f,gray))
         val input=EditText(this).apply {
-            setText(promptDraft);hint="Например: завтраки на 3 дня на 1500 ₽"
+            setText(promptDraft);textSize=18f;hint="Например: завтраки на 3 дня на 1500 ₽"
             minLines=3;maxLines=6;gravity=Gravity.TOP
             inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setPadding(dp(12),dp(12),dp(12),dp(12));background=rounded(bg,12)
@@ -158,7 +159,7 @@ class MainActivity : Activity() {
         shortcuts.addView(link("Вставить список"){importDialog("")},LinearLayout.LayoutParams(0,-2,1f))
         hero.addView(shortcuts)
         val params=horizontal()
-        val details=label("$days дн.  ·  $portions порц.  ·  "+rub(budget),14f,gray,true)
+        val details=label("$days дн.  ·  $portions порц.  ·  "+rub(budget),16f,gray,true)
         params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
@@ -168,10 +169,10 @@ class MainActivity : Activity() {
                 previewPlan(buildPlan(req))
             }catch(e:Exception){toast(e.message?:"Проверь запрос")}
         }
-        hero.addView(label("Подбор из встроенных рецептов; цены проверяются отдельно.",12f,gray))
+        hero.addView(label("Подбор из встроенных рецептов; цены проверяются отдельно.",14f,gray))
         val shop=card(body)
         shop.addView(label("Пятёрочка",19f,ink,true))
-        shop.addView(label(catalogLabel(),13f,gray))
+        shop.addView(label(catalogLabel(),15f,gray))
         val shopActions=horizontal()
         shopActions.addView(link("Обновить цены"){syncCatalog()},LinearLayout.LayoutParams(0,-2,1f))
         shopActions.addView(link("Выгодные товары"){discountReport()},LinearLayout.LayoutParams(0,-2,1f))
@@ -186,7 +187,7 @@ class MainActivity : Activity() {
     private fun planSettings(){
         val d=field(days.toString(),numeric=true)
         val p=field(portions.toString(),numeric=true)
-        val b=field((budget/100).toString(),numeric=true,decimal=true)
+        val b=field("${budget/100}.${(budget%100).toString().padStart(2,'0')}",numeric=true,decimal=true)
         dialog("Параметры меню",fields("Дней (1–14)" to d,"Порций (1–20)" to p,"Бюджет, ₽" to b)){
             val n=d.text.toString().toIntOrNull();val count=p.text.toString().toIntOrNull();val limit=money(b.text.toString())
             if(n==null||n !in 1..14||count==null||count !in 1..20||limit==null)false
@@ -226,13 +227,13 @@ class MainActivity : Activity() {
         c.addView(label("Бюджет",14f,gray)); c.addView(label(rub(budget),29f,green,true))
         c.addView(label((if(s.complete) "Итого" else "Известный минимум")+": "+rub(s.totalKnown),20f,if(s.over) Color.rgb(175,46,32) else ink,true))
         c.addView(label(when { s.over -> "Превышение бюджета минимум на ${rub(s.totalKnown-budget)}"; !s.complete -> "Без цены/фасовки: ${s.unknown}. Бюджет пока не подтверждён."; else -> "Остаток бюджета: ${rub(budget-s.totalKnown)}" },14f,gray))
-        c.addView(label("Доставка (введено вручную): ${rub(delivery)}",13f,gray))
+        c.addView(label("Доставка (введено вручную): ${rub(delivery)}",15f,gray))
         val hasNeeds=items.any{it.need>0&&!it.checked}
         if(hasNeeds){
             val ready=buildTransfer(items,budget,delivery)
             if(ready.error==null)addButton(c,"Перенести в Пятёрочку",true){prepareTransfer()}
             else addButton(c,"Подобрать товары и цены",true){chooseFromCatalog()}
-            c.addView(label(catalogLabel(),12f,gray))
+            c.addView(label(catalogLabel(),14f,gray))
         }
         val tools=horizontal()
         tools.addView(link("＋ Продукт"){addDialog()},LinearLayout.LayoutParams(0,-2,1f))
@@ -263,11 +264,11 @@ class MainActivity : Activity() {
             }
             row.addView(check,LinearLayout.LayoutParams(dp(48),dp(48)))
             val details=vertical().apply{setPadding(0,dp(10),0,dp(10))}
-            details.addView(label(i.name,16f,ink,true))
-            details.addView(label("Купить ${i.need} ${i.unit}"+if(i.atHome>0)" · дома ${i.atHome}" else "",12f,gray))
-            if(i.storeName.isNotBlank())details.addView(label(i.storeName,12f,gray))
+            details.addView(label(i.name,18f,ink,true))
+            details.addView(label("Купить ${i.need} ${i.unit}"+if(i.atHome>0)" · дома ${i.atHome}" else "",14f,gray))
+            if(i.storeName.isNotBlank())details.addView(label(i.storeName,14f,gray))
             val cost=i.cost
-            details.addView(label(if(i.need==0L)"Есть дома" else if(cost==null)"Цена неизвестна" else rub(cost),14f,green,true))
+            details.addView(label(if(i.need==0L)"Есть дома" else if(cost==null)"Цена неизвестна" else rub(cost),17f,green,true))
             details.setOnClickListener{editDialog(index)}
             row.addView(details,LinearLayout.LayoutParams(0,-2,1f))
             more(row,"Действия: "+i.name,"Цена и количество" to {editDialog(index)},"Открыть магазин" to {openStore(index)})
@@ -284,12 +285,12 @@ class MainActivity : Activity() {
             val c=card(body);val row=horizontal()
             val info=vertical()
             info.addView(label(r.name,18f,ink,true))
-            info.addView(label("${r.ingredients.size} ингредиентов · $portions порц.",13f,gray))
+            info.addView(label("${r.ingredients.size} ингредиентов · $portions порц.",15f,gray))
             info.setOnClickListener{AlertDialog.Builder(this).setTitle(r.name).setMessage(r.ingredients.joinToString("\n"){"${it.name} ${(it.amount*portions+r.servings-1)/r.servings} ${it.unit}"}+"\n\n"+r.method).setPositiveButton("Закрыть",null).show()}
             row.addView(info,LinearLayout.LayoutParams(0,-2,1f))
             val plus=button("+",false){try{items=merge(items,r.ingredients,portions,r.servings);save();toast("Рецепт добавлен")}catch(e:Exception){toast(e.message?:"Ошибка количества")}}
             plus.contentDescription="Добавить "+r.name
-            row.addView(plus,LinearLayout.LayoutParams(dp(48),dp(48)))
+            row.addView(plus,LinearLayout.LayoutParams(dp(56),dp(56)))
             c.addView(row)
         }
     }
@@ -323,7 +324,7 @@ class MainActivity : Activity() {
         val wrap=vertical().apply{setPadding(dp(12),dp(6),dp(12),dp(6))}
         val input=field(hint="Поиск по всему каталогу")
         val result=label("",14f,ink)
-        wrap.addView(label(catalogLabel(),13f,gray));wrap.addView(input)
+        wrap.addView(label(catalogLabel(),15f,gray));wrap.addView(input)
         val sc=ScrollView(this);sc.addView(result);wrap.addView(sc,LinearLayout.LayoutParams(-1,dp(360)))
         fun show(q:String){
             val matches=snapshot.entries.filter{normalized(it.text).contains(normalized(q))}
