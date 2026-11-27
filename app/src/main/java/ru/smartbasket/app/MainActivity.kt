@@ -45,6 +45,13 @@ class MainActivity : Activity() {
         memory.saveHistory(assistantHistory)
     }
     private var assistantBusy=false
+    private val chatConnection by lazy { ChatGptConnection(this) }
+    private fun openChatGptSettings() { startActivityForResult(Intent(this, ChatGptSettingsActivity::class.java), 706) }
+    private fun compactBudget(): String {
+        val whole = (budget / 100).toString().reversed().chunked(3).joinToString("\u202F").reversed()
+        val cents = budget % 100
+        return whole + (if (cents == 0L) "" else "," + cents.toString().padStart(2, '0')) + "\u00A0₽"
+    }
     private var currentPlan: MealPlan? = null
     private var guided = false
     private val reviewed = mutableSetOf<String>()
@@ -52,8 +59,13 @@ class MainActivity : Activity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density + .5f).toInt()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        promptDraft = savedInstanceState?.getString("assistant_prompt").orEmpty()
         load(); assistantHistory.addAll(memory.history()); render(); acceptIntent(intent)
         updater.check(false)
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("assistant_prompt", promptDraft.take(4000))
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); acceptIntent(intent) }
     private fun acceptIntent(i: Intent?) {
@@ -154,7 +166,7 @@ class MainActivity : Activity() {
     private fun homeScreen() {
         val hero=card(body)
         hero.addView(label("ChatGPT · умная корзина",24f,ink,true))
-        hero.addView(label("Спроси о покупках, ценах, питании или блюдах. Запрос и необходимые данные корзины/каталога передаются OpenAI.",15f,gray))
+        hero.addView(label("Меню, покупки и питание. Запрос и нужные для ответа данные корзины и каталога передаются OpenAI.",14f,gray))
         assistantHistory.takeLast(12).forEach{m->hero.addView(label((if(m.role=="user")"Ты: " else "ChatGPT: ")+m.text,16f,ink))}
         if(draftDishes.isNotEmpty()){
             hero.addView(link("Созданные блюда · "+draftDishes.size+"  ›"){tab=1;render()})
@@ -176,13 +188,20 @@ class MainActivity : Activity() {
         shortcuts.addView(link("Вставить список"){importDialog("")},LinearLayout.LayoutParams(0,-2,1f))
         hero.addView(shortcuts)
         val params=horizontal()
-        val details=label("$days дн.  ·  $portions порц.  ·  "+rub(budget)+(calorieTarget?.let{" · $it ккал" }?:""),16f,gray,true)
+        val details=label("$days дн.  ·  $portions порц.  ·  "+compactBudget()+(calorieTarget?.let{" · $it ккал" }?:""),16f,gray,true)
         params.addView(details,LinearLayout.LayoutParams(0,-2,1f))
         params.addView(link("Изменить"){planSettings()})
         hero.addView(params)
-        addButton(hero,if(assistantBusy)"ChatGPT думает…" else "Спросить ChatGPT",true){askAssistant()}
-        addButton(hero,"Новый диалог"){if(!assistantBusy){assistantHistory.clear();memory.clearHistory();draftDishes=emptyList();render()}}
-        hero.addView(link("Мои предпочтения  ›"){if(!assistantBusy)memoryDialog()})
+        val connected = chatConnection.connected()
+        addButton(hero, if (assistantBusy) "ChatGPT думает…" else if (connected) "Спросить ChatGPT" else "Подключить ChatGPT", true) {
+            if (!assistantBusy) { if (chatConnection.connected()) askAssistant() else openChatGptSettings() }
+        }
+        val tools = horizontal()
+        if (assistantHistory.isNotEmpty() || draftDishes.isNotEmpty()) {
+            tools.addView(link("Новый диалог") { if (!assistantBusy) { assistantHistory.clear(); memory.clearHistory(); draftDishes = emptyList(); render() } }, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        tools.addView(link("Настроить предпочтения") { if (!assistantBusy) memoryDialog() }.apply { textSize = 14f }, LinearLayout.LayoutParams(0, -2, 1f))
+        hero.addView(tools)
         addButton(hero,"Локальный подбор (без ChatGPT)") {
             try {
                 val parsed=parseRequest(promptDraft,days,portions.coerceAtMost(20),budget)
@@ -212,13 +231,13 @@ class MainActivity : Activity() {
         val connection=ChatGptConnection(this)
         if(!connection.connected()){
             AlertDialog.Builder(this).setTitle("Подключи ChatGPT").setMessage("Для диалога нужен активный вход и разрешение использования плана.")
-                .setNegativeButton("Отмена",null).setPositiveButton("Подключить"){_,_->startActivity(Intent(this,ChatGptSettingsActivity::class.java))}.show()
+                .setNegativeButton("Отмена",null).setPositiveButton("Подключить"){_,_->openChatGptSettings()}.show()
             return
         }
         val history=assistantHistory.toList()
         val preferences=memory.preferences();val targetDays=days;val people=portions;val target=calorieTarget
         val previous=items.toList();val limit=budget;val shipping=delivery
-        assistantBusy=true;promptDraft="";render()
+        assistantBusy=true;render()
         Thread{
             try{
                 val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target)
@@ -227,6 +246,7 @@ class MainActivity : Activity() {
                     if(!isFinishing&&!isDestroyed){
                         rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text))
                         if(answer.dishes.isNotEmpty())draftDishes=answer.dishes
+                        if (promptDraft.trim() == prompt) promptDraft = ""
                         assistantBusy=false;render()
                         val showBasket={answer.proposal?.let{showAssistantProposal(it,previous,limit,shipping)};Unit}
                         if(answer.preferenceProposal!=null&&answer.preferenceProposal!=preferences){
@@ -239,20 +259,31 @@ class MainActivity : Activity() {
                         }else showBasket()
                     }
                 }
-            }catch(_:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
-                assistantBusy=false;if(promptDraft.isBlank())promptDraft=prompt;render();toast("Не удалось получить ответ ChatGPT. Проверь подключение и лимиты.")
+            }catch(e:Exception){runOnUiThread{if(!isFinishing&&!isDestroyed){
+                assistantBusy=false
+                render()
+                AlertDialog.Builder(this).setTitle("Ответ ChatGPT не получен")
+                    .setMessage(chatGptFailureMessage(e) ?: "Проверь подключение и лимиты ChatGPT.")
+                    .setNegativeButton("Закрыть", null)
+                    .apply {
+                        if (promptDraft.trim() == prompt && connection.connected() &&
+                            generateSequence<Throwable>(e) { it.cause }.any { it is java.net.UnknownHostException }) {
+                            setPositiveButton("Повторить") { _, _ -> askAssistant() }
+                        }
+                    }.show()
             }}}
         }.start()
     }
-    private fun showAssistantProposal(proposal:BasketProposal,previous:List<BasketItem>,limit:Long,shipping:Long){
+    internal fun showAssistantProposal(proposal:BasketProposal,previous:List<BasketItem>,limit:Long,shipping:Long){
         if(items!=previous||budget!=limit||delivery!=shipping){toast("Корзина или бюджет изменились. Повтори запрос.");return}
         val proposed=proposal.items
         val s=summarize(proposed,limit,shipping)
         val summary=if(s.complete)"Итого с доставкой: "+rub(s.totalKnown) else "Известный минимум с доставкой: "+rub(s.totalKnown)+" · без цены: "+s.unknown
-        val rows=proposed.joinToString("\n"){it.name+" — "+it.amount+" "+it.unit+" · "+(it.cost?.let{c->rub(c)}?:"цена неизвестна")}
+        val catalogHint = proposal.catalogHint?.let { "\n$it" }.orEmpty()
+        val rows = proposal.previewRows(nutritionCache::get)
         val warning=if(s.over)"\nПревышен текущий бюджет." else if(!s.complete)"\nБюджет не подтверждён." else ""
         AlertDialog.Builder(this).setTitle("Предложение ChatGPT")
-            .setMessage(summary+warning+"\nБюджет: "+rub(limit)+"\nЦены предварительные.\n\n"+rows+"\n\nЗаменить текущий список? Заказ не оформляется.")
+            .setMessage(summary+warning+"\nБюджет: "+rub(limit)+"\nЦены предварительные."+catalogHint+"\n\n"+rows+"\n\nЗаменить текущий список? Заказ не оформляется.")
             .setNegativeButton("Отклонить"){_,_->rememberMessage(AssistantMessage("assistant","Приложение: пользователь отклонил предложение, корзина не изменена."));render()}
             .setPositiveButton("Применить"){_,_->
                 if(items!=previous||budget!=limit||delivery!=shipping){toast("Условия изменились. Повтори запрос.")}
@@ -279,7 +310,7 @@ class MainActivity : Activity() {
         addButton(panel,"Установить скачанное обновление"){dlg.dismiss();updater.installDownloaded()}
         addButton(panel,"Бюджет и доставка"){dlg.dismiss();budgetDialog()}
         addButton(panel,"Память и предпочтения"){dlg.dismiss();if(!assistantBusy)memoryDialog()else toast("Дождись ответа ChatGPT")}
-        addButton(panel,"Подключение ChatGPT"){dlg.dismiss();if(!assistantBusy)startActivity(Intent(this,ChatGptSettingsActivity::class.java))else toast("Дождись ответа ChatGPT")}
+        addButton(panel,"Подключение ChatGPT"){dlg.dismiss();if(!assistantBusy)openChatGptSettings()else toast("Дождись ответа ChatGPT")}
         dlg.show()
     }
     private fun planSettings(){
@@ -498,14 +529,37 @@ class MainActivity : Activity() {
     }
     private fun catalogBrowser(){
         val snapshot=LocalCatalog(this).read()?:run{syncCatalog();return}
-        val wrap=vertical().apply{setPadding(dp(12),dp(6),dp(12),dp(6))}
+        val wrap=vertical().apply{setPadding(dp(16),dp(8),dp(16),dp(8))}
         val input=field(hint="Поиск по всему каталогу")
-        val result=label("",14f,ink)
-        wrap.addView(label(catalogLabel(),15f,gray));wrap.addView(input)
-        val sc=ScrollView(this);sc.addView(result);wrap.addView(sc,LinearLayout.LayoutParams(-1,dp(360)))
+        val count=label("",14f,gray)
+        val list=ListView(this).apply{dividerHeight=dp(1)}
+        val searchIndex=snapshot.entries.map{entry->normalized(entry.name+" "+entry.text)}
+        var matches=snapshot.entries
+        val adapter=object:BaseAdapter(){
+            override fun getCount():Int=matches.size
+            override fun getItem(position:Int):CatalogEntry=matches[position]
+            override fun getItemId(position:Int):Long=position.toLong()
+            override fun getView(position:Int,convertView:View?,parent:android.view.ViewGroup):View{
+                val row=convertView as? LinearLayout ?: vertical().apply{
+                    setPadding(dp(2),dp(8),dp(2),dp(8))
+                    addView(label("",16f,ink,true))
+                    addView(label("",14f,gray))
+                }
+                val display=catalogDisplay(getItem(position))
+                (row.getChildAt(0) as TextView).text=display.title
+                (row.getChildAt(1) as TextView).text=display.priceLabel
+                return row
+            }
+        }
+        list.adapter=adapter
+        wrap.addView(label(catalogLabel(),14f,gray));wrap.addView(input);wrap.addView(count)
+        wrap.addView(list,LinearLayout.LayoutParams(-1,minOf(dp(360),(resources.displayMetrics.heightPixels*.42f).toInt())))
         fun show(q:String){
-            val matches=snapshot.entries.filter{normalized(it.text).contains(normalized(q))}
-            result.text="Найдено: "+matches.size+"\n\n"+matches.take(100).joinToString("\n\n"){it.text}
+            val term=normalized(q)
+            matches=if(term.isEmpty()) snapshot.entries else snapshot.entries.filterIndexed{index,_->searchIndex[index].contains(term)}
+            count.text=if(matches.isEmpty()) "Ничего не найдено" else "Найдено: "+matches.size
+            adapter.notifyDataSetChanged()
+            list.setSelection(0)
         }
         input.addTextChangedListener(object:android.text.TextWatcher{
             override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
@@ -546,7 +600,7 @@ class MainActivity : Activity() {
         deals.addView(link("Посмотреть предложения  ›"){discountReport()})
         val help=card(body)
         help.addView(label("Импорт списка",18f,ink,true))
-        help.addView(link("Вставить из ChatGPT  ›"){importDialog("")})
+        help.addView(link("Вставить список  ›"){importDialog("")})
         help.addView(link("Скопировать шаблон запроса"){copy("Составь список ингредиентов с количеством в граммах, миллилитрах или штуках, по одному продукту на строку.")})
     }
     private fun field(value:String="",hint:String="", numeric:Boolean=false, decimal:Boolean=false) = EditText(this).apply { setText(value); this.hint=hint; inputType=if(numeric) InputType.TYPE_CLASS_NUMBER or (if(decimal) InputType.TYPE_NUMBER_FLAG_DECIMAL else 0) else InputType.TYPE_CLASS_TEXT; setSingleLine(true) }
@@ -627,6 +681,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==706){render();return}
         if(requestCode==705){if(resultCode==RESULT_OK)nutritionDialog();return}
         if(requestCode==704){render();return}
         if(requestCode==703){

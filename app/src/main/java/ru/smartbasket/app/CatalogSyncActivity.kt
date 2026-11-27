@@ -49,6 +49,75 @@ class CatalogSyncActivity:Activity(){
     private var apiFailure=""
     @Volatile private var apiCancelled=false
     private var apiRunning=false
+    private var saving=false
+    private var addressCheck=false
+    private var siteOpening=true
+    private var siteError=false
+    private val localCatalog by lazy { LocalCatalog(this) }
+    private val catalogLock=Any()
+    private lateinit var savedButton:Button
+    private var hasSavedCopy=false
+    private val savedCopyNotice get()=if(hasSavedCopy) "\nСтарая копия доступна по кнопке «Сохранённый каталог»." else ""
+    private fun showStatus(stage:String, detail:String=""){
+        status.text=stage+if(detail.isEmpty()) "" else "\n"+detail
+    }
+    private fun scanStatus(stage:String,detail:String=""){
+        val counts="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров собрано: "+products.size
+        showStatus(stage,counts+(if(detail.isEmpty()) "" else "\n"+detail)+savedCopyNotice)
+    }
+    private fun idleControls(){
+        stop.isEnabled=false
+        start.isEnabled=true
+        apiButton.isEnabled=true
+    }
+    private fun startControls(){
+        start.isEnabled=false
+        apiButton.isEnabled=false
+        stop.isEnabled=true
+    }
+    private fun cancelSync(){
+        if(saving)return
+        if(addressCheck){
+            addressCheck=false;generation++;idleControls()
+            showStatus("Обновление отменено",savedCopyNotice.trimStart())
+        }else if(apiRunning){
+            apiCancelled=true;stop.isEnabled=false
+            showStatus("Останавливаем обновление…",savedCopyNotice.trimStart())
+        }else if(active){
+            finishSync("Обновление отменено",false)
+        }
+    }
+    private fun resolveStore(useApi:Boolean,onResolved:(String)->Unit){
+        if(active||apiRunning||addressCheck||saving)return
+        if(!catalogPage(web.url.orEmpty())||siteOpening||siteError){
+            if(siteError){siteError=false;siteOpening=true;showStatus("Открываем сайт «Пятёрочки»…",savedCopyNotice.trimStart());web.loadUrl("https://5ka.ru/catalog/")}
+            else if(siteOpening)showStatus("Открываем сайт «Пятёрочки»…",savedCopyNotice.trimStart())
+            else showStatus("Ждём адрес доставки","Открой каталог сайта и выбери адрес."+savedCopyNotice)
+            return
+        }
+        addressCheck=true;startControls()
+        showStatus("Проверяем выбранный магазин…",savedCopyNotice.trimStart())
+        val g=++generation
+        handler.postDelayed({
+            if(addressCheck&&generation==g){
+                addressCheck=false;generation++;idleControls()
+                showStatus("Не удалось определить магазин","Проверь адрес доставки и повтори обновление."+savedCopyNotice)
+            }
+        },15000)
+        web.evaluateJavascript(storeScript){raw->
+            if(!addressCheck||generation!=g||isDestroyed||isFinishing)return@evaluateJavascript
+            handler.removeCallbacksAndMessages(null)
+            addressCheck=false
+            val code=try{JSONTokener(raw).nextValue() as String}catch(_:Exception){""}
+            if(!code.matches(Regex("[A-Za-z0-9_-]{1,40}"))){
+                idleControls()
+                showStatus("Ждём адрес доставки","Выбери адрес на сайте, затем повтори обновление."+savedCopyNotice)
+                return@evaluateJavascript
+            }
+            if(useApi&&apiBlocked()){idleControls();return@evaluateJavascript}
+            onResolved(code)
+        }
+    }
     private lateinit var apiButton:Button
     private val settings by lazy { getSharedPreferences("catalog_sync",MODE_PRIVATE) }
     private fun apiBlocked()=settings.getBoolean("api_forbidden",false)
@@ -57,13 +126,19 @@ class CatalogSyncActivity:Activity(){
     override fun onCreate(state:Bundle?){
         super.onCreate(state)
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(Color.rgb(244,247,244))}
-        status=TextView(this).apply{setPadding(dp(12),dp(10),dp(12),dp(10));textSize=16f;text="Выбери адрес доставки на сайте. Затем нажми «Загрузить каталог». Вся доступная выдача будет загружаться независимо от рецептов."}
+        hasSavedCopy=java.io.File(filesDir,"store-catalog.json").isFile
+        status=TextView(this).apply{setPadding(dp(12),dp(10),dp(12),dp(10));textSize=16f}
+        showStatus("Открываем сайт «Пятёрочки»…",savedCopyNotice.trimStart())
         root.addView(status)
         start=Button(this).apply{text="Обновить каталог и цены";isAllCaps=false;setOnClickListener{if(apiBlocked())begin() else beginApi()}}
-        stop=Button(this).apply{text="Остановить";isAllCaps=false;isEnabled=false;setOnClickListener{if(apiRunning){apiCancelled=true;status.text="Отмена запроса…";stop.isEnabled=false}else finishSync("Остановлено пользователем",false)}}
+        stop=Button(this).apply{text="Остановить";isAllCaps=false;isEnabled=false;setOnClickListener{cancelSync()}}
         apiButton=Button(this).apply{text="Загрузить через сайт";isAllCaps=false;setOnClickListener{begin()}}
-        root.addView(start);root.addView(stop);if(!apiBlocked())root.addView(apiButton)
-        if(apiBlocked())status.text="Выбери адрес доставки и нажми «Обновить каталог и цены». Используется доступный каталог сайта."
+        savedButton=Button(this).apply{
+            text="Сохранённый каталог";isAllCaps=false
+            visibility=if(hasSavedCopy) android.view.View.VISIBLE else android.view.View.GONE
+            setOnClickListener{openSavedCatalog()}
+        }
+        root.addView(start);root.addView(stop);if(!apiBlocked())root.addView(apiButton);root.addView(savedButton)
         web=WebView(this)
         web.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;allowFileAccess=false;allowContentAccess=false;mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW;setSupportMultipleWindows(false);javaScriptCanOpenWindowsAutomatically=false}
         CookieManager.getInstance().setAcceptCookie(true)
@@ -78,72 +153,132 @@ class CatalogSyncActivity:Activity(){
             }
             override fun onPageFinished(view:WebView,url:String){
                 if(active&&samePage(url,current))schedule(generation,500)
+                else if(siteOpening&&!active&&!apiRunning&&!saving&&catalogPage(url)){
+                    siteOpening=false
+                    if(!siteError)showStatus("Каталог сайта открыт","Проверь адрес доставки и нажми «Обновить каталог и цены»."+savedCopyNotice)
+                }
             }
-            override fun onReceivedSslError(view:WebView,handler:SslErrorHandler,error:SslError){handler.cancel();if(active)finishSync("Ошибка TLS",false)}
+            override fun onReceivedError(view:WebView,request:WebResourceRequest,error:WebResourceError){
+                if(request.isForMainFrame&&catalogPage(request.url.toString()))webFailure("Сайт магазина не отвечает")
+            }
+            override fun onReceivedSslError(view:WebView,handler:SslErrorHandler,error:SslError){
+                handler.cancel()
+                if(catalogPage(error.url.orEmpty()))webFailure("Не удалось установить защищённое соединение")
+            }
             override fun onReceivedHttpError(view:WebView,request:WebResourceRequest,response:WebResourceResponse){
-                if(active&&request.isForMainFrame&&response.statusCode in listOf(401,403,429))finishSync("Магазин ограничил доступ ("+response.statusCode+").",false)
+                if(request.isForMainFrame&&catalogPage(request.url.toString())){
+                    val code=response.statusCode
+                    webFailure(if(code in listOf(401,403,429))"Магазин ограничил доступ (HTTP "+code+")" else "Сайт магазина вернул HTTP "+code)
+                }
             }
         }
         root.addView(web,LinearLayout.LayoutParams(-1,0,1f));setContentView(root)
         web.loadUrl("https://5ka.ru/catalog/")
     }
+    private fun openSavedCatalog(){
+        savedButton.isEnabled=false
+        Thread{
+            val snapshot=synchronized(catalogLock){localCatalog.read()}
+            runOnUiThread{
+                if(isDestroyed||isFinishing)return@runOnUiThread
+                savedButton.isEnabled=true
+                if(snapshot==null){
+                    Toast.makeText(this,"Сохранённая копия недоступна",Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                val panel=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(dp(16),dp(4),dp(16),0)}
+                val input=EditText(this).apply{hint="Поиск по сохранённому каталогу";isSingleLine=true}
+                val count=TextView(this)
+                val list=ListView(this)
+                val adapter=ArrayAdapter<String>(this,android.R.layout.simple_list_item_1,mutableListOf())
+                list.adapter=adapter
+                panel.addView(input);panel.addView(count);panel.addView(list,LinearLayout.LayoutParams(-1,dp(280)))
+                fun fill(){
+                    val q=input.text.toString().trim()
+                    val matches=if(q.isEmpty())snapshot.entries else snapshot.entries.filter{
+                        it.name.contains(q,ignoreCase=true)||it.text.contains(q,ignoreCase=true)
+                    }
+                    adapter.clear()
+                    adapter.addAll(matches.take(100).map{catalogDisplay(it).label()})
+                    count.text=if(matches.size>100) "Найдено: "+matches.size+" · показано 100" else "Найдено: "+matches.size
+                }
+                input.addTextChangedListener(object:android.text.TextWatcher{
+                    override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+                    override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){fill()}
+                    override fun afterTextChanged(s:android.text.Editable?){}
+                })
+                fill()
+                AlertDialog.Builder(this).setTitle("Сохранённый каталог").setView(panel)
+                    .setPositiveButton("Закрыть",null).show()
+            }
+        }.start()
+    }
+    private fun webFailure(reason:String){
+        if(active){finishSync(reason,false);return}
+        if(apiRunning||saving)return
+        siteOpening=false;siteError=true
+        if(addressCheck){addressCheck=false;generation++;handler.removeCallbacksAndMessages(null);idleControls()}
+        showStatus("Не удалось открыть каталог",reason+". Нажми «Обновить каталог и цены», чтобы повторить."+savedCopyNotice)
+    }
     private fun beginApi(){
         if(apiBlocked())return
-        if(active||apiRunning||!catalogPage(web.url.orEmpty())){Toast.makeText(this,"Сначала выбери адрес в каталоге",Toast.LENGTH_LONG).show();return}
-        apiButton.isEnabled=false;start.isEnabled=false
-        web.evaluateJavascript(storeScript){raw->
-            if(isFinishing||isDestroyed)return@evaluateJavascript
-            val code=try{JSONTokener(raw).nextValue() as String}catch(_:Exception){""}
-            if(!code.matches(Regex("[A-Za-z0-9_-]{1,40}"))){
-                apiButton.isEnabled=true;start.isEnabled=true;status.text="Магазин не определён. Выбери адрес доставки.";return@evaluateJavascript
-            }
-            apiRunning=true;apiCancelled=false;stop.isEnabled=true
-            status.text="API: магазин "+code+" · загрузка дерева категорий"
+        resolveStore(true){code->
+            apiRunning=true;apiCancelled=false;startControls()
+            val apiGeneration=generation
+            showStatus("Загружаем категории…",savedCopyNotice.trimStart())
             Thread{
                 try{
                     val snapshot=CatalogApi({apiCancelled}).download(code){i,total,count->
-                        runOnUiThread{if(!isDestroyed&&!isFinishing&&apiRunning)status.text="API: категории "+i+"/"+total+" · товаров "+count}
-                    }
-                    runOnUiThread{
-                        if(isDestroyed||isFinishing)return@runOnUiThread
-                        web.evaluateJavascript(storeScript){current->
-                            if(isDestroyed||isFinishing)return@evaluateJavascript
-                            val confirmed=try{JSONTokener(current).nextValue() as String}catch(_:Exception){""}
-                            if(apiCancelled||confirmed!=code){endApi("Магазин изменился или загрузка отменена. Прежняя база сохранена.");return@evaluateJavascript}
-                            try{
-                                LocalCatalog(this).write(snapshot)
-                                endApi("Получено "+snapshot.entries.size+" товаров, обычных цен "+snapshot.entries.count{it.regular!=null}+". Полнота и акции ещё не подтверждены.")
-                                AlertDialog.Builder(this).setTitle("Каталог обновлён").setMessage(status.text).setPositiveButton("Готово"){_,_->setResult(RESULT_OK);finish()}.show()
-                            }catch(_:Exception){endApi("Ошибка записи базы.")}
+                        runOnUiThread{
+                            if(!isDestroyed&&!isFinishing&&apiRunning&&generation==apiGeneration&&!apiCancelled)
+                                showStatus("Обходим категории…","Категорий: "+i+"/"+total+" · товаров собрано: "+count+savedCopyNotice)
                         }
                     }
-                 }catch(e:Exception){runOnUiThread{
-                    if(isDestroyed||isFinishing)return@runOnUiThread
+                    runOnUiThread{
+                        if(isDestroyed||isFinishing||!apiRunning||generation!=apiGeneration)return@runOnUiThread
+                        if(apiCancelled){endApi("Обновление отменено");return@runOnUiThread}
+                        showStatus("Проверяем магазин перед сохранением…",savedCopyNotice.trimStart())
+                        val check=Runnable{if(apiRunning&&generation==apiGeneration)endApi(if(apiCancelled)"Обновление отменено" else "Каталог не обновлён",if(apiCancelled)"" else "Сайт не подтвердил магазин. Повтори обновление.")}
+                        handler.postDelayed(check,15000)
+                        web.evaluateJavascript(storeScript){current->
+                            handler.removeCallbacks(check)
+                            if(isDestroyed||isFinishing||!apiRunning||generation!=apiGeneration)return@evaluateJavascript
+                            val confirmed=try{JSONTokener(current).nextValue() as String}catch(_:Exception){""}
+                            if(apiCancelled){endApi("Обновление отменено");return@evaluateJavascript}
+                            if(confirmed!=code){endApi("Каталог не обновлён","Магазин доставки изменился.");return@evaluateJavascript}
+                            if(snapshot.entries.isEmpty()||snapshot.entries.none{it.regular!=null}){
+                                endApi("Каталог не обновлён","Не получено ни одной карточки с подтверждённой ценой.")
+                                return@evaluateJavascript
+                            }
+                            apiRunning=false
+                            saveSnapshot(snapshot,snapshot.entries.count{it.regular!=null})
+                        }
+                    }
+                }catch(e:Exception){runOnUiThread{
+                    if(isDestroyed||isFinishing||!apiRunning||generation!=apiGeneration)return@runOnUiThread
+                    if(apiCancelled){endApi("Обновление отменено");return@runOnUiThread}
                     if(e is CatalogHttpException&&e.status==403){
                         settings.edit().putBoolean("api_forbidden",true).apply()
-                        endApi("Прямой API недоступен (HTTP 403). Прежняя база сохранена.")
                         apiFailure="API HTTP 403"
-                        if(!apiCancelled&&catalogPage(web.url.orEmpty()))begin()
-                        else status.text="API недоступен. Открой каталог сайта и повтори обновление."
-                    }else {
+                        endApi("Прямое обновление недоступно","Можно обновить каталог через сайт.")
+                        apiButton.visibility=android.view.View.GONE
+                    }else{
                         apiFailure=if(e is CatalogHttpException) "API HTTP "+e.status else "API: "+e.javaClass.simpleName
-                        endApi(apiFailure+". Прежняя база сохранена. Можно использовать кнопку «Загрузить через сайт».")
+                        endApi("Каталог не обновлён","Не удалось загрузить данные. Попробуй «Загрузить через сайт».")
                     }
                 }}
             }.start()
         }
     }
-    private fun endApi(message:String){apiRunning=false;apiButton.isEnabled=true;start.isEnabled=true;stop.isEnabled=false;status.text=message}
+    private fun endApi(stage:String,detail:String=""){
+        apiRunning=false;idleControls()
+        showStatus(stage,(detail+savedCopyNotice).trimStart())
+    }
     private fun begin(){
-        if(active||apiRunning||!catalogPage(web.url.orEmpty())){Toast.makeText(this,"Сначала открой каталог и выбери адрес",Toast.LENGTH_LONG).show();return}
-        start.isEnabled=false;apiButton.isEnabled=false
-        web.evaluateJavascript(storeScript){raw->
-            if(isDestroyed||isFinishing)return@evaluateJavascript
-            val code=try{JSONTokener(raw).nextValue() as String}catch(_:Exception){""}
-            if(!code.matches(Regex("[A-Za-z0-9_-]{1,40}"))){
-                start.isEnabled=true;apiButton.isEnabled=true;status.text="Не определён магазин доставки. Выбери адрес на сайте, затем повтори.";return@evaluateJavascript
-            }
-            store=code;queue.clear();seen.clear();rootSections.clear();products.clear();done=0;failed=0;active=true;stop.isEnabled=true
+        resolveStore(false){code->
+            store=code;queue.clear();seen.clear();rootSections.clear();products.clear();done=0;failed=0;active=true
+            lastScan="Сканирование ещё не началось"
+            startControls()
             enqueue("https://5ka.ru/catalog/");next()
         }
     }
@@ -174,7 +309,7 @@ class CatalogSyncActivity:Activity(){
         rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L
         lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime();recoveryStage=0
         callbackWatchdog=null
-        status.text="Категорий обработано: "+done+" · в очереди: "+queue.size+" · товаров: "+products.size
+        scanStatus(if(atRoot())"Открываем список категорий…" else "Открываем категорию…")
         val g=generation;web.loadUrl(current)
         handler.postDelayed({if(active&&generation==g)skipStalled("Превышено время загрузки категории")},900000)
         schedule(g,1200)
@@ -195,7 +330,7 @@ class CatalogSyncActivity:Activity(){
         generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
         web.stopLoading()
         openCurrent()
-        status.text=reason+". Повторное открытие категории (1/1); собранные товары сохранены."
+        scanStatus("Повторяем загрузку категории…",reason)
     }
     private fun watchCallback(g:Int){
         clearCallbackWatchdog()
@@ -214,7 +349,7 @@ class CatalogSyncActivity:Activity(){
     private fun read(g:Int,collect:Boolean=false){
         if(reading||!active||g!=generation)return
         if(!samePage(web.url.orEmpty(),current)){
-            lastScan="Ожидание страницы каталога";status.text=lastScan
+            lastScan="Ожидание страницы каталога";scanStatus("Ждём загрузку страницы…")
             if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,1000)
             return
         }
@@ -227,7 +362,7 @@ class CatalogSyncActivity:Activity(){
                 val now=android.os.SystemClock.elapsedRealtime()
                 if(missingStoreSince==0L)missingStoreSince=now
                 lastScan=if(j==null) "Скрипт не вернул данные страницы" else "Страница ещё не подтвердила магазин"
-                status.text=lastScan
+                scanStatus("Ждём подтверждение магазина…",lastScan)
                 if(now-missingStoreSince>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,1000)
                 return@evaluateJavascript
             }
@@ -282,19 +417,18 @@ class CatalogSyncActivity:Activity(){
             if(pageState!=lastPageState||!quietEnd){
                 lastPageState=pageState;stableSince=now
             }else if(stableSince==0L)stableSince=now
-            status.text="Категорий обработано: "+done+" · товаров сохранено: "+products.size+" · в очереди: "+queue.size+
-                "\n"+(if(j.optBoolean("loading"))"Ожидание подгрузки" else if(quietEnd)"Проверка конца категории" else "Быстрая прокрутка")+
-                " · карточек на странице: "+j.optInt("cardCount")+" · без изменений "+(idle/1000)+" с"
+            scanStatus(if(j.optBoolean("loading"))"Ждём подгрузку товаров…" else if(quietEnd)"Проверяем конец категории…" else "Обходим категории…",
+                "Карточек на странице: "+j.optInt("cardCount"))
             if(rounds>=2400){skipStalled("Превышен лимит проверок категории");return@evaluateJavascript}
             if(quietEnd&&now-stableSince>=CatalogStallPolicy.END_STABLE_MS){
-                status.text="Категория прогружена по видимой выдаче. Сбор данных…"
+                scanStatus("Собираем карточки категории…")
                 read(g,true);return@evaluateJavascript
             }
             when(CatalogStallPolicy.action(idle,recoveryStage,quietEnd)){
                 3->{recoverStalled("Каталог не меняется 20 секунд");return@evaluateJavascript}
                 2,1->{
                     recoveryStage=CatalogStallPolicy.action(idle,recoveryStage,quietEnd)
-                    status.text="Восстановление прокрутки "+recoveryStage+"/2 · товаров "+products.size
+                    scanStatus("Восстанавливаем прокрутку…")
                     reading=true;watchCallback(g)
                     val script=if(recoveryStage==1)advanceScript else retryScrollScript
                     web.evaluateJavascript(script){_ ->
@@ -313,27 +447,65 @@ class CatalogSyncActivity:Activity(){
         }
     }
     private fun finishSync(reason:String,ended:Boolean){
-        active=false;generation++;handler.removeCallbacksAndMessages(null);stop.isEnabled=false;start.isEnabled=true;apiButton.isEnabled=true
+        active=false;generation++;handler.removeCallbacksAndMessages(null)
+        stop.isEnabled=false
         val count=products.size
+        if(!ended){
+            web.stopLoading();idleControls()
+            if(reason=="Обновление отменено")showStatus(reason,savedCopyNotice.trimStart())
+            else showStatus("Каталог не обновлён",reason.trimEnd('.')+"."+savedCopyNotice)
+            return
+        }
         val priced=products.values.count{displayCatalogPrice(it.text)!=null}
-        status.text=reason+". Найдено "+count+" товаров, цен "+priced+"."
         if(count==0||priced==0){
-            val report=reason+"\n"+apiFailure+"\n"+lastScan+"\nОсновных категорий: "+rootSections.size+"\nТоваров: "+count+" · цен: "+priced+"\nПрежняя база сохранена."
+            idleControls()
+            showStatus("Каталог не обновлён","Не получено ни одной карточки с подтверждённой ценой."+savedCopyNotice)
+            val report=reason+"\n"+apiFailure+"\n"+lastScan+"\nОсновных категорий: "+rootSections.size+"\nТоваров: "+count+" · цен: "+priced+savedCopyNotice
             AlertDialog.Builder(this).setTitle("Каталог не обновлён").setMessage(report)
                 .setNeutralButton("Копировать отчёт"){_,_->
                     val cm=getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("SmartBasket",report))
-                }.setPositiveButton("ОК",null).show();return
+                }.setPositiveButton("ОК",null).show()
+            return
         }
-        val snapshot=CatalogSnapshot(store,System.currentTimeMillis(),done,failed+(if(ended)0 else 1),products.values.toList())
-        val previous=LocalCatalog(this).read()
-        if(snapshot.failed>0&&previous!=null&&previous.store==snapshot.store&&previous.entries.size>snapshot.entries.size){
-            AlertDialog.Builder(this).setTitle("Неполная выгрузка").setMessage("Получено "+count+" товаров; предыдущая база содержит "+previous.entries.size+". Прежняя база сохранена, чтобы не потерять ассортимент.").setPositiveButton("ОК",null).show();return
-        }
-        try{LocalCatalog(this).write(snapshot)}catch(_:Exception){Toast.makeText(this,"Ошибка сохранения базы",Toast.LENGTH_LONG).show();return}
-        AlertDialog.Builder(this).setTitle("Каталог загружен частично или полностью по видимой выдаче").setMessage("Магазин: "+store+"\nТоваров: "+count+"\nС распознанной ценой: "+priced+"\nКатегорий обработано: "+done+"\nПроблемных: "+snapshot.failed+"\nПолный ассортимент не подтверждён. Цены требуют сверки перед заказом.").setPositiveButton("Готово"){_,_->setResult(RESULT_OK);finish()}.show()
+        saveSnapshot(CatalogSnapshot(store,System.currentTimeMillis(),done,failed,products.values.toList()),priced)
     }
-    override fun onDestroy(){apiCancelled=true;active=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
+    private fun saveSnapshot(snapshot:CatalogSnapshot,priced:Int){
+        saving=true;start.isEnabled=false;apiButton.isEnabled=false;stop.isEnabled=false
+        showStatus("Сохраняем каталог…","Товаров: "+snapshot.entries.size+" · с ценой: "+priced+savedCopyNotice)
+        Thread{
+            val result=try{
+                synchronized(catalogLock){
+                    val previous=localCatalog.read()
+                    if(snapshot.failed>0&&previous!=null) "Новый каталог неполный. Предыдущая копия не заменена."
+                    else if(previous!=null&&previous.store==snapshot.store&&previous.entries.size>snapshot.entries.size)
+                        "Найдено меньше товаров, чем в сохранённой копии. Предыдущая копия не заменена."
+                    else{localCatalog.write(snapshot);null}
+                }
+            }catch(_:Exception){"Не удалось сохранить новую копию."}
+            runOnUiThread{
+                if(isDestroyed||isFinishing)return@runOnUiThread
+                saving=false;idleControls()
+                if(result!=null){showStatus("Каталог не обновлён",result+savedCopyNotice);return@runOnUiThread}
+                hasSavedCopy=true
+                savedButton.visibility=android.view.View.VISIBLE
+                setResult(RESULT_OK)
+                val title=if(snapshot.failed>0)"Сохранена неполная копия" else "Каталог обновлён"
+                val detail="Товаров: "+snapshot.entries.size+" · с ценой: "+priced+
+                    (if(snapshot.failed>0)" · категорий с проблемами: "+snapshot.failed else "")+
+                    "\nПолный ассортимент сайта не подтверждён."
+                showStatus(title,detail)
+                AlertDialog.Builder(this).setTitle(title).setMessage(detail)
+                    .setPositiveButton("Готово"){_,_->finish()}.show()
+            }
+        }.start()
+    }
+    @Deprecated("Legacy activity back navigation")
+    override fun onBackPressed(){
+        if(saving)return
+        super.onBackPressed()
+    }
+    override fun onDestroy(){apiCancelled=true;active=false;addressCheck=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
     companion object {
         // Official catalog's broad groups. Names are resolved to live links, not fixed IDs.
         private val primarySections=mapOf(
@@ -458,3 +630,4 @@ class CatalogSyncActivity:Activity(){
         """.trimIndent()
     }
 }
+
