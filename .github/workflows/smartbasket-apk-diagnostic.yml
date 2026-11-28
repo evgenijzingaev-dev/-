@@ -1,0 +1,84 @@
+name: SmartBasket APK emulator check
+on:
+  push:
+    branches: [diagnostics/smartbasket-0124-catalog]
+permissions:
+  contents: read
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Start Android emulator and exercise released APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then SDKM="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -1)"; fi
+          sudo chmod a+rw /dev/kvm
+          "$SDKM" 'emulator' 'platform-tools' 'system-images;android-34;google_apis;x86_64'
+          AVDM="$(dirname "$SDKM")/avdmanager"
+          printf 'no\n' | "$AVDM" create avd --force -n smartbasket-test -k 'system-images;android-34;google_apis;x86_64'
+          "$ANDROID_HOME/emulator/emulator" -avd smartbasket-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > evidence/emulator.log 2>&1 &
+          trap 'adb emu kill >/dev/null 2>&1 || true' EXIT
+          timeout 150 bash -c 'adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 4; done'
+          adb shell input keyevent 82
+          curl -fLsS --retry 2 -o SmartBasket.apk https://github.com/evgenijzingaev-dev/-/releases/download/v0.12.4/SmartBasket.apk
+          printf '%s\n' 'a2ffc75b2f731e4ff0450cc880cac1b740a0e84ee58c8871080f818d5aff9ed7  SmartBasket.apk' | sha256sum -c -
+          adb install SmartBasket.apk
+          adb shell am start -W -n ru.smartbasket.app/.MainActivity
+          python3 - <<'PY' | tee evidence/catalog-observations.txt
+          import re
+          import subprocess
+          import time
+          import xml.etree.ElementTree as ET
+
+          def adb(*args, **kwargs):
+              return subprocess.run(["adb", *args], check=True, timeout=30, **kwargs)
+          def observe(name):
+              adb("shell", "uiautomator", "dump", "/sdcard/sbdiag.xml", stdout=subprocess.DEVNULL)
+              data = adb("exec-out", "cat", "/sdcard/sbdiag.xml", capture_output=True).stdout
+              nodes = ET.fromstring(data).iter("node")
+              items = [(n.get("text") or n.get("content-desc") or "", n.get("bounds","")) for n in nodes]
+              visible = list(dict.fromkeys(t for t, _ in items if t.strip()))
+              print(name + ": " + " | ".join(visible[:35]), flush=True)
+              open("evidence/"+name+".xml","wb").write(data)
+              with open("evidence/"+name+".png","wb") as out:
+                  adb("exec-out", "screencap", "-p", stdout=out)
+              return items
+          def tap(rows,label):
+              for t,bounds in rows:
+                  if t.casefold().strip()==label.casefold():
+                      v=list(map(int,re.findall(r"\d+",bounds)))
+                      if len(v)==4:
+                          adb("shell","input","tap",str((v[0]+v[2])//2),str((v[1]+v[3])//2))
+                          return True
+              return False
+          time.sleep(4)
+          rows=observe("01-app-open")
+          if not tap(rows,"Магазин"):
+              print("Блокер: вкладка «Магазин» не обнаружена."); raise SystemExit(2)
+          time.sleep(4)
+          rows=observe("02-store")
+          if not tap(rows,"Обновить каталог"):
+              print("Блокер: кнопка «Обновить каталог» не обнаружена."); raise SystemExit(2)
+          for i in range(3):
+              time.sleep(6)
+              rows=observe(f"03-catalog-{i}")
+              if any("адрес доставки" in t.casefold() for t,_ in rows): break
+          if not tap(rows,"Обновить каталог и цены"):
+              print("Блокер: не найдена кнопка запуска обновления."); raise SystemExit(2)
+          for i in range(3):
+              time.sleep(8)
+              rows=observe(f"04-refresh-{i}")
+              if any(x in t.casefold() for t,_ in rows for x in ("ждём адрес доставки","не удалось открыть","ограничил доступ","не отвечает","каталог не обновлён")): break
+          print("Наблюдения собраны. Отдельно оценить статус каталога; этот запуск не подтверждает полный сбор.")
+          PY
+      - name: Upload emulator observations
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smartbasket-catalog-emulator
+          path: evidence/
+          retention-days: 3
