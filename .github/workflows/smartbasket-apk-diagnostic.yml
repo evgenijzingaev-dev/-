@@ -67,9 +67,8 @@ jobs:
               data = adb("exec-out", "cat", "/sdcard/sbdiag.xml", capture_output=True).stdout
               nodes = ET.fromstring(data).iter("node")
               items = [(n.get("text") or n.get("content-desc") or "", n.get("bounds","")) for n in nodes]
-              visible = list(dict.fromkeys(t for t, _ in items if t.strip()))
+              visible = list(dict.fromkeys(t for t, _ in items if t.strip() and len(t)<140 and "sdk_version=" not in t))
               print(name + ": " + " | ".join(visible[:35]), flush=True)
-              open("evidence/"+name+".xml","wb").write(data)
               with open("evidence/"+name+".png","wb") as out:
                   adb("exec-out", "screencap", "-p", stdout=out)
               return items
@@ -99,6 +98,13 @@ jobs:
               time.sleep(8)
               rows=observe(f"04-refresh-{i}")
               if any(x in t.casefold() for t,_ in rows for x in ("ждём адрес доставки","не удалось открыть","ограничил доступ","не отвечает","каталог не обновлён")): break
+          if any("прямое обновление недоступно" in t.casefold() for t,_ in rows):
+              if not tap(rows,"Обновить каталог и цены"):
+                  print("Кнопка веб-обновления недоступна."); raise SystemExit(3)
+              for i in range(12):
+                  time.sleep(9)
+                  rows=observe(f"05-web-refresh-{i:02}")
+                  if any(t.casefold().startswith(x) for t,_ in rows for x in ("каталог не обновлён","сбор карточек завершён","ждём адрес доставки","сохранена неполная копия")): break
           print("Наблюдения собраны. Отдельно оценить статус каталога; этот запуск не подтверждает полный сбор.")
           PY
       - name: Upload emulator observations
