@@ -12,7 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
-      - name: Start Android emulator and exercise released APK
+      - uses: actions/checkout@v4
+        with:
+          ref: 46ee25481a804e97af092737e5bdcf7fd04e9eb2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build the catalog fix without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then SDKM="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -1)"; fi
+          "$SDKM" 'platforms;android-34' 'build-tools;34.0.0'
+          gradle --no-daemon :app:assembleDebug
+      - name: Start Android emulator and exercise patched APK
         shell: bash
         run: |
           set -euo pipefail
@@ -50,9 +68,7 @@ jobs:
           test "$started" = 1
           echo "Android booted"
           adb shell input keyevent 82
-          curl -fLsS --retry 2 -o SmartBasket.apk https://github.com/evgenijzingaev-dev/-/releases/download/v0.12.4/SmartBasket.apk
-          printf '%s\n' 'a2ffc75b2f731e4ff0450cc880cac1b740a0e84ee58c8871080f818d5aff9ed7  SmartBasket.apk' | sha256sum -c -
-          adb install SmartBasket.apk
+          adb install app/build/outputs/apk/debug/app-debug.apk
           adb shell am start -W -n ru.smartbasket.app/.MainActivity
           python3 - <<'PY' | tee evidence/catalog-observations.txt
           import re
@@ -107,6 +123,7 @@ jobs:
                   break
           print("Наблюдения собраны. Отдельно оценить статус каталога; этот запуск не подтверждает полный сбор.")
           PY
+          adb logcat -d -s SmartBasketCatalog:I '*:S' | tee evidence/catalog-routes.txt
       - name: Upload emulator observations
         uses: actions/upload-artifact@v4
         if: always()
