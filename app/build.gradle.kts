@@ -3,7 +3,7 @@ android {
     namespace = "ru.smartbasket.app"
     compileSdk = 34
     defaultConfig.testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    defaultConfig { applicationId = "ru.smartbasket.app"; minSdk = 26; targetSdk = 34; versionCode = 26; versionName = "0.12.3" }
+    defaultConfig { applicationId = "ru.smartbasket.app"; minSdk = 26; targetSdk = 34; versionCode = 27; versionName = "0.12.4" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
