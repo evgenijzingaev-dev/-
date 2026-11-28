@@ -6,7 +6,7 @@ import org.json.JSONObject
 data class AssistantMessage(val role:String,val text:String,val groups:List<ProductGroup> = emptyList())
 
 /** A bounded agent; tools read data or prepare a proposal, never commit changes. */
-class BasketAssistant(
+class BasketAssistant internal constructor(
     private val connection:ChatGptConnection,
     private val snapshot:CatalogSnapshot?,
     private val items:List<BasketItem>,
@@ -18,7 +18,8 @@ class BasketAssistant(
     private val portions:Int=3,
     private val calorieTarget:Int?=null,
     private val familyContext:String="[]",
-    private val familyMemberIds:List<String> = emptyList()
+    private val familyMemberIds:List<String> = emptyList(),
+    private val detailLookup:(String)->CatalogProductDetails?={null}
 ){
     private val catalogRules="""Для рекомендаций блюд, меню и покупок основа — сохранённый каталог выбранного магазина. Сначала найди подходящие позиции через search_catalog_batch (можно запросить обзор пустым массивом), search_catalog или quote_ingredient, затем выбирай блюда под найденные ингредиенты с учётом ограничений и бюджета. Для каждого покупаемого ингредиента в publish_dishes передай catalog_id реально найденной позиции. null допустим только для подтверждённых домашних запасов из get_basket в нужном количестве. Для недельного семейного плана сначала подготовь все уникальные карточки, затем вызови propose_family_week с их точными названиями. Для прямого совета о том, какие товары купить, передай найденные catalog_id в recommend_catalog_products; название и цену показывает само приложение. Не добавляй в текст другие товары или блюда вне подтверждённого подбора. Если ничего подходящего нет, не выдумывай замену: уточни запрос или предложи обновить каталог. Старая или неполная копия годится только как ориентир по ассортименту, не как подтверждение цен или наличия сегодня. Отсутствие цены — не нулевая стоимость; не обещай уложиться в бюджет, пока не известен полный итог с упаковками и доставкой. Эти требования не ограничивают обычные вопросы о приложении или общие справочные ответы без подбора.
 """
@@ -141,7 +142,7 @@ class BasketAssistant(
                     !currentPrices -> "Цена не подтверждена · каталог неполный"
                     else -> item.display.priceLabel
                 }
-                ProductOption(item.display.title, packageLabel(item), price, item.entry.imageUrl,
+                ProductOption(item.display.title, packageLabel(item), price, detailLookup(item.entry.url)?.images?.firstOrNull() ?: item.entry.imageUrl,
                     item.entry.url.takeIf(::validTransferUrl).orEmpty(), comment)
             }
             idsByGroup[normalized(name)] = ids
@@ -176,7 +177,11 @@ class BasketAssistant(
         offered.add(item.id)
         return JSONObject().put("catalog_id",item.id).put("name",item.display.title.take(220))
             .put("package",packageLabel(item)).put("price_label",if(currentPrices)item.display.priceLabel else JSONObject.NULL)
-            .put("availability_confirmed",false)
+            .put("availability_confirmed",false).apply{
+                nutritionLookup(item.entry.url)?.let{n->put("nutrition_per_100",JSONObject()
+                    .put("basis",n.basis).put("kcal",n.value.kcal).put("protein",n.value.protein)
+                    .put("fat",n.value.fat).put("carbs",n.value.carbs))}
+            }
     }
     private fun catalogSearch(query:String,limit:Int):JSONArray{
         val q=normalized(query.take(120))

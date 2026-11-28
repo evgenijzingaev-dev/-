@@ -4,12 +4,14 @@ import android.content.Context
 import org.json.JSONObject
 
 class NutritionCache(context:Context){
+    private val catalogDetails=CatalogDetailsStore(context)
     private val prefs=context.applicationContext.getSharedPreferences("nutrition_v1",Context.MODE_PRIVATE)
     private fun id(url:String)=try{
         val u=java.net.URI(url)
         if(u.scheme=="https"&&u.host in listOf("5ka.ru","www.5ka.ru")&&u.port in listOf(-1,443)&&u.userInfo==null&&u.path.startsWith("/product/"))u.path.trimEnd('/') else ""
     }catch(_:Exception){""}
-    fun get(url:String):ProductNutrition?=try{
+    fun get(url:String):ProductNutrition? = catalogDetails.read(url)?.nutrition ?: manual(url)
+    private fun manual(url:String):ProductNutrition?=try{
         val k=id(url);if(k.isBlank())null else {
             val o=JSONObject(prefs.getString(k,null)?: "{}")
             val n=Nutrition(o.getDouble("kcal"),o.getDouble("p"),o.getDouble("f"),o.getDouble("c"))

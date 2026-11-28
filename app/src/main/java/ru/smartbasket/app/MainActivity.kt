@@ -31,6 +31,7 @@ class MainActivity : Activity() {
     private var portions = 3
     private val updater by lazy { AppUpdater(this) }
     private val nutritionCache by lazy { NutritionCache(this) }
+    private val catalogDetails by lazy { CatalogDetailsStore(this) }
     private var tab = 3
     private var days = 3
     private var calorieTarget:Int? = null
@@ -333,7 +334,7 @@ class MainActivity : Activity() {
         assistantBusy=true;render()
         Thread{
             try{
-                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target,familyContext,memberIds)
+                val engine=BasketAssistant(connection,LocalCatalog(this).read(),previous,limit,shipping,nutritionCache::get,preferences,targetDays,people,target,familyContext,memberIds,catalogDetails::read)
                 val answer=engine.ask(history,prompt)
                 val week=engine.weekProposal
                 runOnUiThread{
@@ -742,6 +743,7 @@ class MainActivity : Activity() {
             }
         }
         list.adapter=adapter
+        list.setOnItemClickListener{_,_,index,_->matches.getOrNull(index)?.let(::showCatalogProduct)}
         wrap.addView(label(catalogLabel(),14f,gray));wrap.addView(input);wrap.addView(count)
         wrap.addView(list,LinearLayout.LayoutParams(-1,minOf(dp(360),(resources.displayMetrics.heightPixels*.42f).toInt())))
         fun show(q:String){
@@ -758,6 +760,35 @@ class MainActivity : Activity() {
         })
         show("")
         AlertDialog.Builder(this).setTitle("Каталог магазина").setView(wrap).setPositiveButton("Закрыть",null).show()
+    }
+    private fun showCatalogProduct(entry:CatalogEntry){
+        val details=catalogDetails.read(entry.url)
+        val product=catalogDisplay(entry)
+        val panel=vertical().apply{setPadding(dp(18),dp(6),dp(18),dp(10))}
+        val gallery=(details?.images.orEmpty()+trustedCatalogPhoto(entry.imageUrl))
+            .filter{it.isNotBlank()}.distinct()
+        if(gallery.isNotEmpty()){
+            val strip=horizontal()
+            for(url in gallery.take(8)){
+                val photo=ImageView(this).apply{
+                    contentDescription="Фото товара";scaleType=ImageView.ScaleType.FIT_CENTER
+                    background=rounded(soft,12)
+                    setImageResource(android.R.drawable.ic_menu_gallery)
+                }
+                strip.addView(photo,LinearLayout.LayoutParams(dp(110),dp(110)).apply{rightMargin=dp(8)})
+                loadCatalogThumbnail(photo,url)
+            }
+            panel.addView(HorizontalScrollView(this).apply{addView(strip)})
+        }else panel.addView(label("Фото не найдено в карточке",14f,gray))
+        panel.addView(label("Сохранённая цена: "+product.priceLabel,17f,green,true))
+        nutritionCache.get(entry.url)?.let{n->
+            panel.addView(label("КБЖУ на 100 "+n.basis+": "+n.value.label(),15f,ink))
+        }?:panel.addView(label("КБЖУ с карточки не получены",14f,gray))
+        details?.fields.orEmpty().forEach{(name,value)->
+            if(name!="Название"){gap(panel,6);panel.addView(label(name,14f,gray,true));panel.addView(label(value,16f,ink))}
+        }
+        AlertDialog.Builder(this).setTitle(product.title)
+            .setView(ScrollView(this).apply{addView(panel)}).setPositiveButton("Закрыть",null).show()
     }
     private fun discountReport(){
         val snapshot=LocalCatalog(this).read()?:run{syncCatalog();return}

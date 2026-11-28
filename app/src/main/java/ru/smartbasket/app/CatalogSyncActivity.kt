@@ -54,6 +54,9 @@ class CatalogSyncActivity:Activity(){
     private val localCatalog by lazy { LocalCatalog(this) }
     private val catalogLock=Any()
     private lateinit var savedButton:Button
+    private var catalogSaved=false
+    private var productCollectionActive=false
+    private var catalogSummary=""
     private var hasSavedCopy=false
     private val savedCopyNotice get()=if(hasSavedCopy) "\nСтарая копия доступна по кнопке «Сохранённый каталог»." else ""
     private fun showStatus(stage:String, detail:String=""){
@@ -86,7 +89,7 @@ class CatalogSyncActivity:Activity(){
         }
     }
     private fun resolveStore(useApi:Boolean,onResolved:(String)->Unit){
-        if(active||apiRunning||addressCheck||saving)return
+        if(active||apiRunning||addressCheck||saving||productCollectionActive)return
         if(!catalogPage(web.url.orEmpty())||siteOpening||siteError){
             if(siteError){siteError=false;siteOpening=true;showStatus("Открываем сайт «Пятёрочки»…",savedCopyNotice.trimStart());web.loadUrl("https://5ka.ru/catalog/")}
             else if(siteOpening)showStatus("Открываем сайт «Пятёрочки»…",savedCopyNotice.trimStart())
@@ -137,6 +140,15 @@ class CatalogSyncActivity:Activity(){
             setOnClickListener{openSavedCatalog()}
         }
         root.addView(start);root.addView(stop);if(!apiBlocked())root.addView(apiButton);root.addView(savedButton)
+        root.addView(Button(this).apply{
+            text="Дособрать карточки товаров";isAllCaps=false
+            setOnClickListener{
+                if(active||saving||addressCheck||apiRunning||productCollectionActive)return@setOnClickListener
+                val current=localCatalog.read()
+                if(current==null)Toast.makeText(this@CatalogSyncActivity,"Сначала обнови каталог",Toast.LENGTH_SHORT).show()
+                else openProductCollection(current.store)
+            }
+        })
         web=WebView(this)
         web.settings.apply{javaScriptEnabled=true;domStorageEnabled=true;allowFileAccess=false;allowContentAccess=false;mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW;setSupportMultipleWindows(false);javaScriptCanOpenWindowsAutomatically=false}
         CookieManager.getInstance().setAcceptCookie(true)
@@ -481,11 +493,39 @@ class CatalogSyncActivity:Activity(){
                 val detail="Товаров: "+snapshot.entries.size+" · с ценой: "+priced+
                     (if(snapshot.failed>0)" · категорий с проблемами: "+snapshot.failed else "")+
                     "\nПолный ассортимент сайта не подтверждён."
-                showStatus(title,detail)
-                AlertDialog.Builder(this).setTitle(title).setMessage(detail)
-                    .setPositiveButton("Готово"){_,_->finish()}.show()
+                catalogSaved=true
+                catalogSummary=title+"\n"+detail
+                showStatus("Список товаров сохранён. Открываем карточки…",detail)
+                openProductCollection(snapshot.store)
             }
         }.start()
+    }
+    private fun openProductCollection(code:String){
+        productCollectionActive=true
+        startActivityForResult(android.content.Intent(this,NutritionActivity::class.java)
+            .putExtra("catalog_details_store",code),707)
+    }
+    @Deprecated("Activity result bridge")
+    override fun onActivityResult(requestCode:Int,resultCode:Int,data:android.content.Intent?){
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode!=707)return
+        productCollectionActive=false
+        val report=if(data==null)"Сбор подробностей остановлен." else {
+            val saved=data.getIntExtra("details_saved",0)
+            val nutrition=data.getIntExtra("details_nutrition",0)
+            val reused=data.getIntExtra("details_reused",0)
+            val unread=data.getIntExtra("details_unread",0)
+            val withoutLink=data.getIntExtra("details_without_link",0)
+            listOf("Карточек обновлено: "+saved+" · из них с КБЖУ: "+nutrition,
+                "Недавних карточек в копии: "+reused,
+                if(unread>0)"Не собрано в этом проходе: "+unread else "",
+                if(withoutLink>0)"Без ссылки на карточку: "+withoutLink else "",
+                data.getStringExtra("details_reason").orEmpty()).filter{it.isNotBlank()}.joinToString("\n")
+        }
+        showStatus("Сбор карточек завершён",report+savedCopyNotice)
+        AlertDialog.Builder(this).setTitle("Карточки товаров")
+            .setMessage(listOf(catalogSummary,report).filter{it.isNotBlank()}.joinToString("\n\n"))
+            .setPositiveButton("Готово"){_,_->if(catalogSaved)finish()}.show()
     }
     @Deprecated("Legacy activity back navigation")
     override fun onBackPressed(){
