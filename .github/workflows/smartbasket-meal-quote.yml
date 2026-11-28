@@ -1,0 +1,151 @@
+name: SmartBasket three-item quote
+on:
+  push:
+    branches: [diagnostics/smartbasket-meal-quote]
+permissions:
+  contents: read
+concurrency:
+  group: smartbasket-meal-quote
+  cancel-in-progress: true
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 5074f472627964ff05150677ee3faa437974c076
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build the catalog fix without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then SDKM="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -1)"; fi
+          "$SDKM" 'platforms;android-34' 'build-tools;34.0.0'
+          gradle --no-daemon :app:assembleDebug
+      - name: Start Android emulator and exercise patched APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then SDKM="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -1)"; fi
+          sudo chmod a+rw /dev/kvm
+          "$SDKM" 'emulator' 'platform-tools' 'system-images;android-34;google_apis;x86_64'
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          adb version
+          export ANDROID_USER_HOME="$RUNNER_TEMP/smartbasket-android"
+          export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          AVDM="$(dirname "$SDKM")/avdmanager"
+          AVD_PATH="$ANDROID_AVD_HOME/smartbasket-test.avd"
+          printf 'no\n' | "$AVDM" create avd --force -n smartbasket-test -p "$AVD_PATH" -k 'system-images;android-34;google_apis;x86_64'
+          test -s "$AVD_PATH/config.ini"
+          if [ ! -s "$ANDROID_AVD_HOME/smartbasket-test.ini" ]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-34\n' "$AVD_PATH" > "$ANDROID_AVD_HOME/smartbasket-test.ini"
+          fi
+          emulator -list-avds | grep -Fx smartbasket-test
+          adb start-server
+          emulator -avd smartbasket-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > evidence/emulator.log 2>&1 &
+          emu=$!
+          trap 'adb emu kill >/dev/null 2>&1 || true; tail -n 60 evidence/emulator.log' EXIT
+          started=0
+          for attempt in $(seq 1 36); do
+            if ! kill -0 "$emu" 2>/dev/null; then echo "Emulator process exited before Android boot."; exit 1; fi
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" = 1 ]; then started=1; break; fi
+            if (( attempt % 4 == 0 )); then echo "Waiting for Android boot (attempt $attempt)"; adb devices; fi
+            sleep 5
+          done
+          test "$started" = 1
+          echo "Android booted"
+          adb shell input keyevent 82
+          adb install app/build/outputs/apk/debug/app-debug.apk
+          adb shell am start -W -n ru.smartbasket.app/.MainActivity
+          python3 - <<'PY' | tee evidence/catalog-observations.txt
+          import re
+          import subprocess
+          import time
+          import xml.etree.ElementTree as ET
+
+          def adb(*args, **kwargs):
+              return subprocess.run(["adb", *args], check=True, timeout=30, **kwargs)
+          def observe(name):
+              items = []
+              for attempt in range(2):
+                  try:
+                      adb("shell", "rm", "-f", "/sdcard/sbdiag.xml")
+                      adb("shell", "uiautomator", "dump", "--compressed", "/sdcard/sbdiag.xml", stdout=subprocess.DEVNULL)
+                      data = adb("exec-out", "cat", "/sdcard/sbdiag.xml", capture_output=True).stdout
+                      nodes = ET.fromstring(data).iter("node")
+                      items = [(n.get("text") or n.get("content-desc") or "", n.get("bounds","")) for n in nodes]
+                      break
+                  except (subprocess.SubprocessError, ET.ParseError) as e:
+                      print(name + ": status read failed: " + type(e).__name__, flush=True)
+                      time.sleep(3)
+              visible = list(dict.fromkeys(t for t, _ in items if t.strip() and len(t)<140 and "sdk_version=" not in t))
+              print(name + ": " + " | ".join(visible[:35]), flush=True)
+              with open("evidence/"+name+".png","wb") as out:
+                  adb("exec-out", "screencap", "-p", stdout=out)
+              return items
+          def tap(rows,label):
+              for t,bounds in rows:
+                  if t.casefold().strip()==label.casefold():
+                      v=list(map(int,re.findall(r"\d+",bounds)))
+                      if len(v)==4:
+                          adb("shell","input","tap",str((v[0]+v[2])//2),str((v[1]+v[3])//2))
+                          return True
+              return False
+          import shlex
+          ingredients="Яйца 6 шт\nПомидоры 250 г\nМолоко 90 мл"
+          command="am start -W -n ru.smartbasket.app/.MainActivity -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "+shlex.quote(ingredients)
+          adb("shell",command)
+          def wait_for(label,name,max_attempts=5,click=False):
+              for i in range(max_attempts):
+                  time.sleep(3)
+                  rows=observe(f"{name}-{i:02}")
+                  if any(t.casefold().strip()==label.casefold() for t,_ in rows):
+                      if click: tap(rows,label)
+                      return rows
+              print("Не появился элемент: "+label,flush=True)
+              raise SystemExit(3)
+          wait_for("Распознать","01-import",click=True)
+          wait_for("Добавить","02-add-local",click=True)
+          wait_for("⋯","03-basket",click=True)
+          wait_for("Поиск по категориям","04-select-price-search",click=True)
+          for i in range(10):
+              time.sleep(5)
+              rows=observe(f"05-store-ready-{i:02}")
+              if any(t.casefold().strip() in ("адрес доставки","поиск товаров","молочные продукты, яйца") for t,_ in rows):
+                  break
+          else:
+              print("Витрина не открылась, текущий магазин не подтверждён.",flush=True)
+              raise SystemExit(4)
+          if not tap(rows,"Подобрать все цены"):
+              print("Кнопка подбора недоступна.",flush=True)
+              raise SystemExit(4)
+          for i in range(28):
+              time.sleep(13)
+              rows=observe(f"06-live-quote-{i:02}")
+              if any(t.startswith("Результат подбора:") for t,_ in rows):
+                  print("Получен результат ценового подбора. Прогон анонимный: фактический адрес доставки и стоимость доставки не подтверждены.",flush=True)
+                  raise SystemExit(0)
+          print("Ценовой подбор не завершился за отведённое время.",flush=True)
+          raise SystemExit(5)
+          PY
+          adb logcat -d -s SmartBasketCatalog:I '*:S' | tee evidence/catalog-routes.txt
+      - name: Upload emulator observations
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smartbasket-meal-observations
+          path: evidence/
+          retention-days: 3
