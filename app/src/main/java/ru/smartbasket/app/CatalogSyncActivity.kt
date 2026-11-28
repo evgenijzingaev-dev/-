@@ -435,7 +435,8 @@ class CatalogSyncActivity:Activity(){
 
                 if(j.optBoolean("lostCards")||filteredRoute)failed++
                 android.util.Log.i("SmartBasketCatalog","finished category="+catalogIdentity(current)+
-                    " cards="+pageProducts.size+" filtered="+filteredRoute+" lost="+j.optBoolean("lostCards"))
+                    " cards="+pageProducts.size+" filtered="+filteredRoute+" lost="+j.optBoolean("lostCards")+
+                    " tail="+j.optBoolean("passedTail")+" docEnd="+j.optBoolean("docEnd"))
                 if(products.size>=30000){failed++;finishSync("Достигнут лимит выгрузки",false);return@evaluateJavascript}
                 if(atRoot()){
                     if(rootSections.isEmpty()){finishSync("Не найдены основные категории каталога",false);return@evaluateJavascript}
@@ -564,7 +565,7 @@ class CatalogSyncActivity:Activity(){
         private val categoryPath=Regex("^/catalog/[A-Za-z0-9_-]+--([A-Za-z0-9_-]+)$")
         private val catalogNavigationQuery=setOf("page","p","offset","limit","cursor","pageindex","pagenumber",
             "pageoffset","pagenum","pagesize","perpage","from","gclid","yclid","_")
-        private const val SCROLL_SETTLE_MS=700L
+        private const val SCROLL_SETTLE_MS=350L
         private const val SLOW_NOTICE_MS=20_000L
         private const val NO_PROGRESS_DEADLINE_MS=120_000L
         private const val WEBVIEW_REPLY_DEADLINE_MS=60_000L
@@ -602,11 +603,14 @@ class CatalogSyncActivity:Activity(){
             }
             let scroll=root,bestScore=0;
             for(const [p,n] of scores){if(n>bestScore){scroll=p;bestScore=n;}}
-            const viewport=scroll===root?{top:0,bottom:window.innerHeight}:scroll.getBoundingClientRect();
+            const innerBounds=scroll===root?null:scroll.getBoundingClientRect();
+            const viewport={top:Math.max(0,innerBounds?.top||0),bottom:Math.min(window.innerHeight,innerBounds?.bottom??window.innerHeight)};
+            const viewportHeight=Math.max(1,viewport.bottom-viewport.top);
             const near=e=>{const r=e.getBoundingClientRect();return e.getClientRects().length>0&&r.bottom>=viewport.top&&r.top<=viewport.bottom;};
-            const moreButtons=[...document.querySelectorAll('button,[role="button"]')].filter(x=>near(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)(?:\s+\d+)?$/i.test((x.innerText||'').trim()));
-            const bottom=scroll.scrollTop+scroll.clientHeight>=scroll.scrollHeight-20;
-            const tracked=anchors.filter(a=>a.getClientRects().length>0&&getComputedStyle(a).visibility==='visible'&&(scroll===root||scroll.contains(a)));
+            const docEnd=scroll.scrollTop+scroll.clientHeight>=scroll.scrollHeight-20;
+            const inScroll=x=>scroll===root||scroll.contains(x);
+            const outsideProductList=x=>x.closest('header,nav,footer,[role="navigation"],[role="contentinfo"],[role="dialog"]');
+            const tracked=anchors.filter(a=>a.getClientRects().length>0&&getComputedStyle(a).visibility==='visible'&&inScroll(a)&&(isRootCatalog||!outsideProductList(a)));
             const visibleCards=new Map();
             let firstTop=Infinity,lastBottom=-Infinity;
             for(const a of tracked){
@@ -622,10 +626,22 @@ class CatalogSyncActivity:Activity(){
               const prev=visibleCards.get(key);
               if(!prev||cardText.length>prev.length)visibleCards.set(key,cardText.slice(0,260));
             }
-            const inCatalog=x=>near(x)&&(scroll===root||scroll.contains(x))&&!x.closest('header,nav,[role="dialog"]');
-            const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="skeleton" i],[data-loading="true"]')].some(x=>{
-              if(!inCatalog(x)||getComputedStyle(x).visibility!=='visible')return false;
+            // The product list ends before store links, banners and a footer of unpredictable height.
+            // Trust the observed tail only after actually passing it, and let lazy loading settle at that position.
+            const passedTail=!isRootCatalog&&tracked.length>0&&lastBottom<=viewport.top+Math.min(24,viewportHeight*0.15);
+            const bottom=docEnd||passedTail;
+            const moreButtons=[...document.querySelectorAll('button,[role="button"]')].filter(x=>{
+              if(!inScroll(x)||outsideProductList(x)||!x.getClientRects().length||x.disabled||x.getAttribute('aria-disabled')==='true'||
+                 !/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)(?:\s+\d+)?$/i.test((x.innerText||'').trim()))return false;
+              if(isRootCatalog||!tracked.length)return near(x);
               const r=x.getBoundingClientRect();
+              return r.top>=lastBottom-24&&r.top<=lastBottom+Math.max(160,viewportHeight);
+            });
+            const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="skeleton" i],[data-loading="true"]')].some(x=>{
+              if(!near(x)||!inScroll(x)||outsideProductList(x))return false;
+              const css=getComputedStyle(x),r=x.getBoundingClientRect();
+              if(css.visibility!=='visible'||/^(fixed|sticky)$/.test(css.position))return false;
+              if(!isRootCatalog&&tracked.length&&(r.bottom<firstTop-12||r.top>lastBottom+Math.max(120,viewportHeight*0.5)))return false;
               return x.getAttribute('aria-busy')==='true'||(r.height>=6&&r.width>=6&&r.bottom>=viewport.top+12);
             });
             const gapsInCards=tracked.length>0&&firstTop<viewport.bottom&&lastBottom>viewport.top&&visibleCards.size===0;
@@ -652,7 +668,7 @@ class CatalogSyncActivity:Activity(){
               if(!state||state.path!==location.pathname)state=window.__smartBasketLoadState={path:location.pathname,first:'',lost:false};
               if(state.first&&![...tracked].some(a=>a.href===state.first))state.lost=true;
               if(!state.first&&first)state.first=first;
-              const meta={store,cardCount:cards.length,more:bottom&&moreButtons.length===1,viewportReady,viewportState:visibleCards.size+'|'+viewportHash,pageState,scrollTop:Math.round(scroll.scrollTop),bottom,lostCards:state.lost};
+              const meta={store,cardCount:cards.length,more:bottom&&moreButtons.length>0,viewportReady,viewportState:visibleCards.size+'|'+viewportHash,pageState,scrollTop:Math.round(scroll.scrollTop),bottom,passedTail,docEnd,lostCards:state.lost};
               if(!${collect})return JSON.stringify(meta);
               const categories=new Map(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
               for(const a of document.querySelectorAll('a[href]')){
@@ -692,17 +708,20 @@ class CatalogSyncActivity:Activity(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
               ${scrollHelpers}
               if(!viewportReady)return false;
-              if(bottom&&moreButtons.length===1){
+              if(bottom&&moreButtons.length>0){
+                if(moreButtons.length!==1)return false;
+                const button=moreButtons[0];
+                if(!near(button)){button.scrollIntoView({block:'center',behavior:'instant'});return true;}
                 const batch=location.pathname+'|'+tracked.length+'|'+(tracked[tracked.length-1]?.href||'');
                 if(window.__smartBasketMoreBatch!==batch){
                   window.__smartBasketMoreBatch=batch;
-                  moreButtons[0].click();
+                  button.click();
                 }
                 return true;
               }
               if(!bottom){
                 // Overlap adjacent screens so that no card row is skipped.
-                const step=Math.max(1,Math.floor(scroll.clientHeight*0.6));
+                const step=Math.max(1,Math.floor(viewportHeight*0.85));
                 const top=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+step);
                 scroll.scrollTo({top,behavior:'instant'});
               }
