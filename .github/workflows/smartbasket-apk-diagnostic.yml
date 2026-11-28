@@ -24,11 +24,31 @@ jobs:
           export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
           test -x "$ANDROID_HOME/platform-tools/adb"
           adb version
+          export ANDROID_USER_HOME="$RUNNER_TEMP/smartbasket-android"
+          export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           AVDM="$(dirname "$SDKM")/avdmanager"
-          printf 'no\n' | "$AVDM" create avd --force -n smartbasket-test -k 'system-images;android-34;google_apis;x86_64'
-          "$ANDROID_HOME/emulator/emulator" -avd smartbasket-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > evidence/emulator.log 2>&1 &
-          trap 'adb emu kill >/dev/null 2>&1 || true' EXIT
-          timeout 150 bash -c 'adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed | tr -d "\r")" = 1 ]; do sleep 4; done'
+          AVD_PATH="$ANDROID_AVD_HOME/smartbasket-test.avd"
+          printf 'no\n' | "$AVDM" create avd --force -n smartbasket-test -p "$AVD_PATH" -k 'system-images;android-34;google_apis;x86_64'
+          test -s "$AVD_PATH/config.ini"
+          if [ ! -s "$ANDROID_AVD_HOME/smartbasket-test.ini" ]; then
+            printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=android-34\n' "$AVD_PATH" > "$ANDROID_AVD_HOME/smartbasket-test.ini"
+          fi
+          emulator -list-avds | grep -Fx smartbasket-test
+          adb start-server
+          emulator -avd smartbasket-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > evidence/emulator.log 2>&1 &
+          emu=$!
+          trap 'adb emu kill >/dev/null 2>&1 || true; tail -n 60 evidence/emulator.log' EXIT
+          started=0
+          for attempt in $(seq 1 36); do
+            if ! kill -0 "$emu" 2>/dev/null; then echo "Emulator process exited before Android boot."; exit 1; fi
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" = 1 ]; then started=1; break; fi
+            if (( attempt % 4 == 0 )); then echo "Waiting for Android boot (attempt $attempt)"; adb devices; fi
+            sleep 5
+          done
+          test "$started" = 1
+          echo "Android booted"
           adb shell input keyevent 82
           curl -fLsS --retry 2 -o SmartBasket.apk https://github.com/evgenijzingaev-dev/-/releases/download/v0.12.4/SmartBasket.apk
           printf '%s\n' 'a2ffc75b2f731e4ff0450cc880cac1b740a0e84ee58c8871080f818d5aff9ed7  SmartBasket.apk' | sha256sum -c -
