@@ -88,23 +88,23 @@ jobs:
           rows=observe("02-store")
           if not tap(rows,"Обновить каталог"):
               print("Блокер: кнопка «Обновить каталог» не обнаружена."); raise SystemExit(2)
-          for i in range(3):
-              time.sleep(6)
-              rows=observe(f"03-catalog-{i}")
-              if any("адрес доставки" in t.casefold() for t,_ in rows): break
-          if not tap(rows,"Обновить каталог и цены"):
-              print("Блокер: не найдена кнопка запуска обновления."); raise SystemExit(2)
-          for i in range(3):
-              time.sleep(8)
-              rows=observe(f"04-refresh-{i}")
-              if any(x in t.casefold() for t,_ in rows for x in ("ждём адрес доставки","не удалось открыть","ограничил доступ","не отвечает","каталог не обновлён")): break
-          if any("прямое обновление недоступно" in t.casefold() for t,_ in rows):
-              if not tap(rows,"Обновить каталог и цены"):
-                  print("Кнопка веб-обновления недоступна."); raise SystemExit(3)
-              for i in range(12):
-                  time.sleep(9)
-                  rows=observe(f"05-web-refresh-{i:02}")
-                  if any(t.casefold().startswith(x) for t,_ in rows for x in ("каталог не обновлён","сбор карточек завершён","ждём адрес доставки","сохранена неполная копия")): break
+          ready=False
+          for i in range(10):
+              time.sleep(5)
+              rows=observe(f"03-catalog-{i:02}")
+              if any(t.casefold().strip() in ("поиск товаров","овощи, фрукты, орехи","молочные продукты, яйца") for t,_ in rows):
+                  ready=True
+                  break
+          if not ready:
+              print("Блокер: за 50 секунд на витрине не появились поиск или категории."); raise SystemExit(3)
+          if not (tap(rows,"Загрузить через сайт") or tap(rows,"Обновить каталог и цены")):
+              print("Кнопка веб-обновления недоступна."); raise SystemExit(3)
+          for i in range(14):
+              time.sleep(7)
+              rows=observe(f"05-web-refresh-{i:02}")
+              statuses=[t.casefold() for t,_ in rows]
+              if any(t.startswith(("каталог не обновлён","сбор карточек завершён","ждём адрес доставки","сохранена неполная копия")) for t in statuses):
+                  break
           print("Наблюдения собраны. Отдельно оценить статус каталога; этот запуск не подтверждает полный сбор.")
           PY
       - name: Upload emulator observations
