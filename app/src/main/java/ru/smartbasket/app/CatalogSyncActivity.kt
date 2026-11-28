@@ -44,6 +44,8 @@ class CatalogSyncActivity:Activity(){
     private var viewportStableSince=0L
     private var callbackWatchdog:Runnable?=null
     private var lastScan="Сканирование ещё не началось"
+    private var lastRouteReport=""
+    private var filteredRoute=false
     private var apiFailure=""
     @Volatile private var apiCancelled=false
     private var apiRunning=false
@@ -292,13 +294,28 @@ class CatalogSyncActivity:Activity(){
             enqueue("https://5ka.ru/catalog/");next()
         }
     }
-    private fun catalogPage(raw:String):Boolean{
+    private fun catalogIdentity(raw:String):String?{
         val u=Uri.parse(raw)
-        return officialStoreUrl(u)&&u.host in listOf("5ka.ru","www.5ka.ru")&&(u.path=="/catalog"||u.path.orEmpty().startsWith("/catalog/"))&&u.query==null
+        if(!officialStoreUrl(u)||u.host !in listOf("5ka.ru","www.5ka.ru"))return null
+        val path=u.path.orEmpty().trimEnd('/')
+        if(path=="/catalog")return path
+        // The category ID is stable even if the storefront changes the readable slug.
+        return categoryPath.matchEntire(path)?.groupValues?.get(1)?.uppercase(java.util.Locale.ROOT)
     }
-    private fun samePage(a:String,b:String)=catalogPage(a)&&Uri.parse(a).path.orEmpty().trimEnd('/')==Uri.parse(b).path.orEmpty().trimEnd('/')
+    private fun catalogPage(raw:String)=catalogIdentity(raw)!=null
+    private fun samePage(a:String,b:String):Boolean{
+        val expected=catalogIdentity(b)?:return false
+        return catalogIdentity(a)==expected
+    }
+    private fun safeCatalogQuery(raw:String):Boolean{
+        val uri=Uri.parse(raw)
+        return uri.isHierarchical&&uri.queryParameterNames.all{k->
+            val name=k.lowercase(java.util.Locale.ROOT)
+            name in catalogNavigationQuery||name.startsWith("utm_")
+        }
+    }
     private fun enqueue(raw:String){
-        if(!catalogPage(raw))return
+        if(!catalogPage(raw)||Uri.parse(raw).query!=null)return
         val path=Uri.parse(raw).path.orEmpty().trimEnd('/')+"/"
         if(path!="/catalog/"&&!Regex("^/catalog/[A-Za-z0-9_-]+--[A-Za-z0-9_-]+/$").matches(path))return
         val canonical="https://5ka.ru"+path
@@ -316,7 +333,7 @@ class CatalogSyncActivity:Activity(){
         openCurrent()
     }
     private fun openCurrent(){
-        stableSince=0L;lastPageState="";missingStoreSince=0L
+        stableSince=0L;lastPageState="";missingStoreSince=0L;lastRouteReport="";filteredRoute=false
         lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime();viewportStableSince=0L
         callbackWatchdog=null
         scanStatus(if(atRoot())"Открываем список категорий…" else "Открываем категорию…")
@@ -348,7 +365,13 @@ class CatalogSyncActivity:Activity(){
     }
     private fun read(g:Int,collect:Boolean=false){
         if(reading||!active||g!=generation)return
-        if(!samePage(web.url.orEmpty(),current)){
+        val actualUrl=web.url.orEmpty()
+        val matches=samePage(actualUrl,current)
+        val knownQuery=matches&&safeCatalogQuery(actualUrl)
+        val routeReport="expected="+catalogIdentity(current)+" actual="+(catalogIdentity(actualUrl)?:"not-catalog")+
+            " query="+(Uri.parse(actualUrl).query!=null)+" recognized="+knownQuery
+        if(routeReport!=lastRouteReport){lastRouteReport=routeReport;android.util.Log.i("SmartBasketCatalog",routeReport)}
+        if(!matches){
             lastScan="Ожидание страницы каталога"
             val waited=android.os.SystemClock.elapsedRealtime()-lastMotionAt
             scanStatus("Ждём загрузку страницы…",if(waited>=SLOW_NOTICE_MS)"Сайт открывается медленно. Не перезагружаем страницу." else "")
@@ -356,6 +379,7 @@ class CatalogSyncActivity:Activity(){
             else schedule(g,1000)
             return
         }
+        if(!knownQuery)filteredRoute=true
         reading=true;watchCallback(g)
         web.evaluateJavascript(if(collect) scanScript else probeScript){raw->
             if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
@@ -409,7 +433,9 @@ class CatalogSyncActivity:Activity(){
                     }
                 }
 
-                if(j.optBoolean("lostCards"))failed++
+                if(j.optBoolean("lostCards")||filteredRoute)failed++
+                android.util.Log.i("SmartBasketCatalog","finished category="+catalogIdentity(current)+
+                    " cards="+pageProducts.size+" filtered="+filteredRoute+" lost="+j.optBoolean("lostCards"))
                 if(products.size>=30000){failed++;finishSync("Достигнут лимит выгрузки",false);return@evaluateJavascript}
                 if(atRoot()){
                     if(rootSections.isEmpty()){finishSync("Не найдены основные категории каталога",false);return@evaluateJavascript}
@@ -535,6 +561,9 @@ class CatalogSyncActivity:Activity(){
     override fun onDestroy(){apiCancelled=true;active=false;addressCheck=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
     companion object {
         // A moving or still-loading viewport never authorizes the next scroll step.
+        private val categoryPath=Regex("^/catalog/[A-Za-z0-9_-]+--([A-Za-z0-9_-]+)$")
+        private val catalogNavigationQuery=setOf("page","p","offset","limit","cursor","pageindex","pagenumber",
+            "pageoffset","pagenum","pagesize","perpage","from","gclid","yclid","_")
         private const val SCROLL_SETTLE_MS=700L
         private const val SLOW_NOTICE_MS=20_000L
         private const val NO_PROGRESS_DEADLINE_MS=120_000L
