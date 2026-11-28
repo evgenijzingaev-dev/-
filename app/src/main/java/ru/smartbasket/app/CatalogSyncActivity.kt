@@ -43,7 +43,7 @@ class CatalogSyncActivity:Activity(){
     private var retryCount=0
     private var lastMotion=""
     private var lastMotionAt=0L
-    private var recoveryStage=0
+    private var viewportStableSince=0L
     private var callbackWatchdog:Runnable?=null
     private var lastScan="Сканирование ещё не началось"
     private var apiFailure=""
@@ -307,7 +307,7 @@ class CatalogSyncActivity:Activity(){
     }
     private fun openCurrent(){
         rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L
-        lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime();recoveryStage=0
+        lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime();viewportStableSince=0L
         callbackWatchdog=null
         scanStatus(if(atRoot())"Открываем список категорий…" else "Открываем категорию…")
         val g=generation;web.loadUrl(current)
@@ -371,11 +371,13 @@ class CatalogSyncActivity:Activity(){
             if(j==null)return@evaluateJavascript
             val pageState=j.optString("pageState")
             val now=android.os.SystemClock.elapsedRealtime()
-            val quietEnd=j.optBoolean("bottom")&&!j.optBoolean("more")&&!j.optBoolean("loading")
-            val motion=pageState+"|"+j.optInt("scrollTop")
-            if(motion!=lastMotion){lastMotion=motion;lastMotionAt=now;recoveryStage=0}
+            val viewportReady=j.optBoolean("viewportReady")
+            val quietEnd=j.optBoolean("bottom")&&!j.optBoolean("more")&&viewportReady
+            val motion=pageState+"|"+j.optInt("scrollTop")+"|"+j.optString("viewportState")+"|"+viewportReady+"|"+j.optBoolean("more")
+            if(motion!=lastMotion){lastMotion=motion;lastMotionAt=now;viewportStableSince=now}
+            if(!viewportReady)viewportStableSince=now
             val idle=now-lastMotionAt
-            if(collect&&quietEnd&&pageState==lastPageState){
+            if(collect&&quietEnd&&pageState==lastPageState&&now-viewportStableSince>=SCROLL_SETTLE_MS){
                 val links=j.optJSONArray("categories")
                 lastScan="Ссылок категорий: "+(links?.length()?:0)+" · распознано основных: "+rootSections.size+" · карточек на странице: "+j.optInt("cardCount")+" · прочитано карточек: "+(j.optJSONArray("products")?.length()?:0)
                 var added=0
@@ -417,28 +419,19 @@ class CatalogSyncActivity:Activity(){
             if(pageState!=lastPageState||!quietEnd){
                 lastPageState=pageState;stableSince=now
             }else if(stableSince==0L)stableSince=now
-            scanStatus(if(j.optBoolean("loading"))"Ждём подгрузку товаров…" else if(quietEnd)"Проверяем конец категории…" else "Обходим категории…",
+            scanStatus(if(!viewportReady)"Ждём подгрузку карточек…" else if(quietEnd)"Проверяем конец категории…" else "Прокручиваем категорию…",
                 "Карточек на странице: "+j.optInt("cardCount"))
             if(rounds>=2400){skipStalled("Превышен лимит проверок категории");return@evaluateJavascript}
-            if(quietEnd&&now-stableSince>=CatalogStallPolicy.END_STABLE_MS){
+            if(quietEnd&&now-maxOf(stableSince,viewportStableSince)>=CatalogStallPolicy.END_STABLE_MS){
                 scanStatus("Собираем карточки категории…")
                 read(g,true);return@evaluateJavascript
             }
-            when(CatalogStallPolicy.action(idle,recoveryStage,quietEnd)){
-                3->{recoverStalled("Каталог не меняется 20 секунд");return@evaluateJavascript}
-                2,1->{
-                    recoveryStage=CatalogStallPolicy.action(idle,recoveryStage,quietEnd)
-                    scanStatus("Восстанавливаем прокрутку…")
-                    reading=true;watchCallback(g)
-                    val script=if(recoveryStage==1)advanceScript else retryScrollScript
-                    web.evaluateJavascript(script){_ ->
-                        if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
-                        clearCallbackWatchdog();reading=false;schedule(g,CatalogStallPolicy.POLL_MS)
-                    }
-                    return@evaluateJavascript
-                }
+            if(!quietEnd&&idle>=CatalogStallPolicy.RELOAD_MS){
+                recoverStalled("Подгрузка карточек остановилась");return@evaluateJavascript
             }
-            if(j.optBoolean("loading")||quietEnd){schedule(g,CatalogStallPolicy.POLL_MS);return@evaluateJavascript}
+            if(!viewportReady||quietEnd||now-viewportStableSince<SCROLL_SETTLE_MS){
+                schedule(g,CatalogStallPolicy.POLL_MS);return@evaluateJavascript
+            }
             reading=true;watchCallback(g)
             web.evaluateJavascript(advanceScript){_ ->
                 if(!active||g!=generation||isDestroyed||isFinishing)return@evaluateJavascript
@@ -507,6 +500,8 @@ class CatalogSyncActivity:Activity(){
     }
     override fun onDestroy(){apiCancelled=true;active=false;addressCheck=false;generation++;handler.removeCallbacksAndMessages(null);if(::web.isInitialized){web.stopLoading();web.destroy()};super.onDestroy()}
     companion object {
+        // A moving or still-loading viewport never authorizes the next scroll step.
+        private const val SCROLL_SETTLE_MS=700L
         // Official catalog's broad groups. Names are resolved to live links, not fixed IDs.
         private val primarySections=mapOf(
             "готовая еда" to "готовая еда","вся готовая еда" to "готовая еда",
@@ -544,9 +539,35 @@ class CatalogSyncActivity:Activity(){
             const near=e=>{const r=e.getBoundingClientRect();return e.getClientRects().length>0&&r.bottom>=viewport.top&&r.top<=viewport.bottom;};
             const moreButtons=[...document.querySelectorAll('button,[role="button"]')].filter(x=>near(x)&&!x.disabled&&x.getAttribute('aria-disabled')!=='true'&&/^(показать ещё|показать еще|загрузить ещё|загрузить еще|ещё товары|еще товары)(?:\s+\d+)?$/i.test((x.innerText||'').trim()));
             const bottom=scroll.scrollTop+scroll.clientHeight>=scroll.scrollHeight-20;
-            const loading=bottom&&[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(x=>{
-              const r=x.getBoundingClientRect();return near(x)&&(scroll===root||scroll.contains(x))&&r.bottom>=viewport.bottom-Math.max(120,scroll.clientHeight*0.35);
+            const tracked=anchors.filter(a=>a.getClientRects().length>0&&getComputedStyle(a).visibility==='visible'&&(scroll===root||scroll.contains(a)));
+            const visibleCards=new Map();
+            let firstTop=Infinity,lastBottom=-Infinity;
+            for(const a of tracked){
+              const rect=a.getBoundingClientRect();
+              firstTop=Math.min(firstTop,rect.top);
+              lastBottom=Math.max(lastBottom,rect.bottom);
+              if(rect.bottom<=viewport.top||rect.top>=viewport.bottom)continue;
+              const key=new URL(a.href,location.href).pathname;
+              // Some cards split their title and price into adjacent elements.
+              const parentText=(a.parentElement?.innerText||'').trim();
+              const label=(a.innerText||a.getAttribute('aria-label')||'').trim();
+              const cardText=label&&parentText.length<=260?parentText||label:label;
+              const prev=visibleCards.get(key);
+              if(!prev||cardText.length>prev.length)visibleCards.set(key,cardText.slice(0,260));
+            }
+            const inCatalog=x=>near(x)&&(scroll===root||scroll.contains(x))&&!x.closest('header,nav,[role="dialog"]');
+            const loading=[...document.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="skeleton" i],[data-loading="true"]')].some(x=>{
+              if(!inCatalog(x)||getComputedStyle(x).visibility!=='visible')return false;
+              const r=x.getBoundingClientRect();
+              return x.getAttribute('aria-busy')==='true'||(r.height>=6&&r.width>=6&&r.bottom>=viewport.top+12);
             });
+            const gapsInCards=tracked.length>0&&firstTop<viewport.bottom&&lastBottom>viewport.top&&visibleCards.size===0;
+            const viewportReady=!loading&&!gapsInCards&&[...visibleCards.values()].every(text=>text.length>0)&&tracked.length>0;
+            let viewportHash=0;
+            for(const [key,value] of visibleCards){
+              const input=key+'|'+value;
+              for(let i=0;i<input.length;i++)viewportHash=(Math.imul(viewportHash,31)+input.charCodeAt(i))|0;
+            }
         """.trimIndent()
         private val probeScript=catalogScript(false)
         private val scanScript=catalogScript(true)
@@ -556,7 +577,6 @@ class CatalogSyncActivity:Activity(){
               let store='';try{store=String(JSON.parse(localStorage.getItem('DeliveryPanelStore')||'{}').selectedStore?.sapCode||'');}catch(e){}
               ${scrollHelpers}
               const cards=document.querySelectorAll('a[href*="/product/"]');
-              const tracked=isRootCatalog?anchors:cards;
               const first=tracked.length?tracked[0].href:'';
               const last=tracked.length?tracked[tracked.length-1].href:'';
               const pageState=tracked.length+'|'+scroll.scrollHeight+'|'+first+'|'+last;
@@ -565,7 +585,7 @@ class CatalogSyncActivity:Activity(){
               if(!state||state.path!==location.pathname)state=window.__smartBasketLoadState={path:location.pathname,first:'',lost:false};
               if(state.first&&![...tracked].some(a=>a.href===state.first))state.lost=true;
               if(!state.first&&first)state.first=first;
-              const meta={store,cardCount:cards.length,more:bottom&&moreButtons.length===1,loading,pageState,scrollTop:Math.round(scroll.scrollTop),bottom,lostCards:state.lost};
+              const meta={store,cardCount:cards.length,more:bottom&&moreButtons.length===1,viewportReady,viewportState:visibleCards.size+'|'+viewportHash,pageState,scrollTop:Math.round(scroll.scrollTop),bottom,lostCards:state.lost};
               if(!${collect})return JSON.stringify(meta);
               const categories=new Map(), products=new Map(), visible=e=>e.getClientRects().length>0&&getComputedStyle(e).visibility==='visible';
               for(const a of document.querySelectorAll('a[href]')){
@@ -600,30 +620,24 @@ class CatalogSyncActivity:Activity(){
               return JSON.stringify({...meta,categories:[...categories.values()],products:[...products.values()]});
             })()
         """.trimIndent()
-        private val retryScrollScript="""
-            (function(){
-              if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
-              ${scrollHelpers}
-              if(!bottom){
-                scroll.scrollTop=scroll.scrollHeight;
-                return true;
-              }
-              if(moreButtons.length===1&&!loading){const now=Date.now();if(now-(window.__smartBasketMoreAt||0)>=1000){window.__smartBasketMoreAt=now;moreButtons[0].click();}return true;}
-              const position=scroll.scrollTop, page=location.href;
-              if(position>0){
-                scroll.scrollTop=Math.max(0,position-Math.max(40,Math.floor(scroll.clientHeight*0.25)));
-                setTimeout(function(){if(location.href===page&&scroll.isConnected)scroll.scrollTop=position;},250);
-              }
-              return true;
-            })()
-        """.trimIndent()
         private val advanceScript="""
             (function(){
               if(location.protocol!=='https:'||!['5ka.ru','www.5ka.ru'].includes(location.hostname)||!(location.pathname==='/catalog'||location.pathname.startsWith('/catalog/')))return false;
               ${scrollHelpers}
-              if(moreButtons.length===1&&bottom&&!loading){const now=Date.now();if(now-(window.__smartBasketMoreAt||0)>=1000){window.__smartBasketMoreAt=now;moreButtons[0].click();}return true;}
+              if(!viewportReady)return false;
+              if(bottom&&moreButtons.length===1){
+                const batch=location.pathname+'|'+tracked.length+'|'+(tracked[tracked.length-1]?.href||'');
+                if(window.__smartBasketMoreBatch!==batch){
+                  window.__smartBasketMoreBatch=batch;
+                  moreButtons[0].click();
+                }
+                return true;
+              }
               if(!bottom){
-                scroll.scrollTop=scroll.scrollHeight;
+                // Overlap adjacent screens so that no card row is skipped.
+                const step=Math.max(1,Math.floor(scroll.clientHeight*0.6));
+                const top=Math.min(scroll.scrollHeight-scroll.clientHeight,scroll.scrollTop+step);
+                scroll.scrollTo({top,behavior:'instant'});
               }
               return true;
             })()
