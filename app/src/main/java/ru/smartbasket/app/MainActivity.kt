@@ -165,11 +165,84 @@ class MainActivity : Activity() {
         setContentView(root)
         when(tab){ 0->basketScreen(); 1->recipeScreen(); 2->storeScreen(); else->homeScreen() }
     }
+    private fun plainChatText(raw: String): String = raw.lineSequence().mapNotNull { line ->
+        val trimmed = line.trim()
+        if (trimmed.startsWith("```") || trimmed.matches(Regex("""[|:\s-]+"""))) return@mapNotNull null
+        val text = trimmed.removePrefix("> ").replace(Regex("""^#{1,6}\s+"""), "")
+            .replace(Regex("""!?\[([^\]]*)\]\([^)]+\)"""), "$1")
+            .replace("**", "").replace("__", "").replace("`", "")
+            .replace(Regex("""(?<!\S)[*-]\s+"""), "• ")
+            .replace(Regex("""\*([^*\n]+)\*"""), "$1")
+        if (text.contains('|')) text.trim('|').split('|').map(String::trim).filter(String::isNotEmpty).joinToString(" · ")
+        else text
+    }.joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim()
+
+    private fun showChatMessage(parent: LinearLayout, message: AssistantMessage, latest: Boolean) {
+        val assistant = message.role == "assistant"
+        val text = if (assistant) plainChatText(message.text) else message.text
+        val heading = if (assistant) "ChatGPT" else "Вы"
+        gap(parent, 8)
+        parent.addView(label(heading, 13f, gray, true))
+        val content = label(text, 16f)
+        val collapsed = !latest && (text.length > 160 || text.count { it == '\n' } > 2 || message.groups.isNotEmpty())
+        if (collapsed) {
+            content.maxLines = 2
+            content.ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        if (text.isNotBlank()) parent.addView(content)
+        val products = vertical()
+        parent.addView(products)
+        if (collapsed) {
+            var expanded = false
+            lateinit var toggle: TextView
+            toggle = link("Показать полностью") {
+                expanded = !expanded
+                content.maxLines = if (expanded) Int.MAX_VALUE else 2
+                toggle.text = if (expanded) "Свернуть" else "Показать полностью"
+                if (expanded && products.childCount == 0) showChatProducts(products, message.groups)
+                products.visibility = if (expanded) View.VISIBLE else View.GONE
+            }
+            parent.addView(toggle)
+        } else showChatProducts(products, message.groups)
+    }
+
+    private fun showChatProducts(parent: LinearLayout, groups: List<ProductGroup>) {
+        for (group in groups) {
+            parent.addView(label(plainChatText(group.name), 17f, ink, true))
+            val choices = horizontal()
+            val scroll = HorizontalScrollView(this).apply { addView(choices) }
+            parent.addView(scroll)
+            for (option in group.options) {
+                val tile = vertical().apply {
+                    background = rounded(soft, 12)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                }
+                choices.addView(tile, LinearLayout.LayoutParams(dp(208), -2).apply { rightMargin = dp(8) })
+                if (option.imageUrl.isNotBlank()) {
+                    val image = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+                    tile.addView(image, LinearLayout.LayoutParams(-1, dp(78)))
+                    loadCatalogThumbnail(image, option.imageUrl)
+                }
+                tile.addView(label(plainChatText(option.title), 16f, ink, true))
+                if (option.pack.isNotBlank()) tile.addView(label(plainChatText(option.pack), 14f, gray))
+                tile.addView(label("Цена на момент ответа: " + option.price.ifBlank { "нет данных" }, 14f, ink))
+                if (option.comment.isNotBlank()) tile.addView(label(plainChatText(option.comment), 14f, gray))
+                if (validTransferUrl(option.url)) tile.addView(link("Открыть товар") {
+                    try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(option.url))) }
+                    catch (_: android.content.ActivityNotFoundException) { toast("Браузер недоступен") }
+                })
+            }
+        }
+    }
+
     private fun homeScreen() {
         val hero=card(body)
         hero.addView(label("ChatGPT · умная корзина",24f,ink,true))
         hero.addView(label("Меню, покупки и питание. Запрос и нужные для ответа данные корзины и каталога передаются OpenAI.",14f,gray))
-        assistantHistory.takeLast(12).forEach{m->hero.addView(label((if(m.role=="user")"Ты: " else "ChatGPT: ")+m.text,16f,ink))}
+        val recent = assistantHistory.takeLast(12)
+        recent.forEachIndexed { index, message ->
+            showChatMessage(hero, message, index == recent.lastIndex)
+        }
         if(draftDishes.isNotEmpty()){
             hero.addView(link("Созданные блюда · "+draftDishes.size+"  ›"){tab=1;render()})
         }
@@ -265,7 +338,7 @@ class MainActivity : Activity() {
                 val week=engine.weekProposal
                 runOnUiThread{
                     if(!isFinishing&&!isDestroyed){
-                        rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text))
+                        rememberMessage(AssistantMessage("user",prompt));rememberMessage(AssistantMessage("assistant",answer.text,answer.groups))
                         if(answer.dishes.isNotEmpty())draftDishes=answer.dishes
                         if (promptDraft.trim() == prompt) promptDraft = ""
                         assistantBusy=false;render()

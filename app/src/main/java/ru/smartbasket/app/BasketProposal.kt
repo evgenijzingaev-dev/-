@@ -4,9 +4,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class BasketProposal(val items:List<BasketItem>,val catalogUpdated:Long?, val catalogHint:String? = null)
-data class AssistantResult(val text:String,val proposal:BasketProposal?,val preferenceProposal:String?=null,val dishes:List<GeneratedDish> = emptyList())
+data class ProductOption(val title:String, val pack:String, val price:String, val imageUrl:String, val url:String, val comment:String)
+data class ProductGroup(val name:String, val options:List<ProductOption>)
+data class AssistantResult(val text:String,val proposal:BasketProposal?,val preferenceProposal:String?=null,val dishes:List<GeneratedDish> = emptyList(), val groups:List<ProductGroup> = emptyList())
 
-internal fun proposeBasket(args:JSONObject,previous:List<BasketItem>,snapshot:CatalogSnapshot?,now:Long):BasketProposal {
+internal fun proposeBasket(args:JSONObject,previous:List<BasketItem>,snapshot:CatalogSnapshot?,now:Long, selected:Map<Int,CatalogEntry> = emptyMap()):BasketProposal {
     val rows=args.getJSONArray("items")
     require(rows.length() in 1..100)
     val seen=mutableSetOf<String>()
@@ -24,6 +26,14 @@ internal fun proposeBasket(args:JSONObject,previous:List<BasketItem>,snapshot:Ca
         val k=key(name,unit)
         require(seen.add(k))
         val item=BasketItem(name,amount,unit,atHome=old[k]?.atHome?:0L)
+        val sku = selected[index]
+        if (sku != null && item.need > 0) {
+            val offer = if (fresh == null || fresh.failed != 0) null
+                else if (sku.plu.isNotBlank()) apiOffer(sku, unit) else parseStoreOffer(sku.text, unit)
+            val regular = offer?.takeUnless { it.conditional }
+            return@map item.copy(storeName = catalogDisplay(sku).title, storeUrl = sku.url.takeIf(::validTransferUrl).orEmpty(),
+                pack = regular?.pack ?: 0L, price = regular?.price)
+        }
         val match=if(item.need>0)findCatalogMatch(entries,item)else null
         if(match==null)item else item.copy(pack=match.offer.pack,price=match.offer.price,storeUrl=match.entry.url,storeName=match.offer.description)
     }
