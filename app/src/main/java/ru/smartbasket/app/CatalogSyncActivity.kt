@@ -32,7 +32,6 @@ class CatalogSyncActivity:Activity(){
     private val rootSections=linkedMapOf<String,String>()
     private val rootPath="/catalog/"
     private fun atRoot()=Uri.parse(current).path.orEmpty().trimEnd('/')==rootPath.trimEnd('/')
-    private var rounds=0
     private var stableSince=0L
     private var lastPageState=""
     private var pendingRead:Runnable?=null
@@ -40,7 +39,6 @@ class CatalogSyncActivity:Activity(){
     private var failed=0
     private var reading=false
     private var missingStoreSince=0L
-    private var retryCount=0
     private var lastMotion=""
     private var lastMotionAt=0L
     private var viewportStableSince=0L
@@ -302,40 +300,30 @@ class CatalogSyncActivity:Activity(){
     private fun next(){
         generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
         if(queue.isEmpty()){finishSync("Доступные категории обработаны",true);return}
-        current=queue.removeFirst();retryCount=0;pageProducts.clear()
+        current=queue.removeFirst();pageProducts.clear()
         openCurrent()
     }
     private fun openCurrent(){
-        rounds=0;stableSince=0L;lastPageState="";missingStoreSince=0L
+        stableSince=0L;lastPageState="";missingStoreSince=0L
         lastMotion="";lastMotionAt=android.os.SystemClock.elapsedRealtime();viewportStableSince=0L
         callbackWatchdog=null
         scanStatus(if(atRoot())"Открываем список категорий…" else "Открываем категорию…")
-        val g=generation;web.loadUrl(current)
-        handler.postDelayed({if(active&&generation==g)skipStalled("Превышено время загрузки категории")},900000)
+        val g=generation
+        // The catalog root may already hold lazily loaded content from address selection.
+        // Do not navigate again when this is already the right document.
+        if(!samePage(web.url.orEmpty(),current))web.loadUrl(current)
+        handler.postDelayed({
+            if(active&&generation==g)finishSync("Не удалось завершить категорию за отведённое время",false)
+        },CATEGORY_DEADLINE_MS)
         schedule(g,1200)
-    }
-    private fun skipStalled(reason:String){
-        lastScan=reason+" · "+lastScan
-        failed++
-        if(atRoot()) {
-            if(rootSections.isEmpty()){finishSync(reason,false);return}
-            enqueueRootSections()
-        } else done++
-        next()
-    }
-    private fun recoverStalled(reason:String){
-        if(!active)return
-        if(retryCount>=1){skipStalled(reason);return}
-        retryCount++
-        generation++;handler.removeCallbacksAndMessages(null);reading=false;pendingRead=null
-        web.stopLoading()
-        openCurrent()
-        scanStatus("Повторяем загрузку категории…",reason)
     }
     private fun watchCallback(g:Int){
         clearCallbackWatchdog()
-        val task=Runnable{if(active&&generation==g&&reading)recoverStalled("Сайт перестал отвечать")}
-        callbackWatchdog=task;handler.postDelayed(task,15000)
+        val task=Runnable{
+            if(active&&generation==g&&reading)
+                finishSync("Сайт перестал отвечать. Запусти обновление заново, когда каталог откроется",false)
+        }
+        callbackWatchdog=task;handler.postDelayed(task,WEBVIEW_REPLY_DEADLINE_MS)
     }
     private fun clearCallbackWatchdog(){
         callbackWatchdog?.let{handler.removeCallbacks(it)}
@@ -349,8 +337,11 @@ class CatalogSyncActivity:Activity(){
     private fun read(g:Int,collect:Boolean=false){
         if(reading||!active||g!=generation)return
         if(!samePage(web.url.orEmpty(),current)){
-            lastScan="Ожидание страницы каталога";scanStatus("Ждём загрузку страницы…")
-            if(android.os.SystemClock.elapsedRealtime()-lastMotionAt>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,1000)
+            lastScan="Ожидание страницы каталога"
+            val waited=android.os.SystemClock.elapsedRealtime()-lastMotionAt
+            scanStatus("Ждём загрузку страницы…",if(waited>=SLOW_NOTICE_MS)"Сайт открывается медленно. Не перезагружаем страницу." else "")
+            if(waited>=NO_PROGRESS_DEADLINE_MS)finishSync("Страница категории не открылась",false)
+            else schedule(g,1000)
             return
         }
         reading=true;watchCallback(g)
@@ -362,8 +353,10 @@ class CatalogSyncActivity:Activity(){
                 val now=android.os.SystemClock.elapsedRealtime()
                 if(missingStoreSince==0L)missingStoreSince=now
                 lastScan=if(j==null) "Скрипт не вернул данные страницы" else "Страница ещё не подтвердила магазин"
+                val waited=now-missingStoreSince
                 scanStatus("Ждём подтверждение магазина…",lastScan)
-                if(now-missingStoreSince>=CatalogStallPolicy.RELOAD_MS)recoverStalled(lastScan) else schedule(g,1000)
+                if(waited>=NO_PROGRESS_DEADLINE_MS)finishSync("Сайт не подтвердил магазин доставки",false)
+                else schedule(g,1000)
                 return@evaluateJavascript
             }
             if(actual!=store){finishSync("Магазин доставки изменился. Выгрузка остановлена.",false);return@evaluateJavascript}
@@ -415,19 +408,20 @@ class CatalogSyncActivity:Activity(){
                 }
                 next();return@evaluateJavascript
             }
-            rounds++
             if(pageState!=lastPageState||!quietEnd){
                 lastPageState=pageState;stableSince=now
             }else if(stableSince==0L)stableSince=now
-            scanStatus(if(!viewportReady)"Ждём подгрузку карточек…" else if(quietEnd)"Проверяем конец категории…" else "Прокручиваем категорию…",
-                "Карточек на странице: "+j.optInt("cardCount"))
-            if(rounds>=2400){skipStalled("Превышен лимит проверок категории");return@evaluateJavascript}
+            val count="Карточек на странице: "+j.optInt("cardCount")
+            scanStatus(if(!quietEnd&&idle>=SLOW_NOTICE_MS)"Подгрузка идёт медленно. Ждём без перезагрузки…"
+                else if(!viewportReady)"Ждём подгрузку карточек…"
+                else if(quietEnd)"Проверяем конец категории…" else "Прокручиваем категорию…",count)
             if(quietEnd&&now-maxOf(stableSince,viewportStableSince)>=CatalogStallPolicy.END_STABLE_MS){
                 scanStatus("Собираем карточки категории…")
                 read(g,true);return@evaluateJavascript
             }
-            if(!quietEnd&&idle>=CatalogStallPolicy.RELOAD_MS){
-                recoverStalled("Подгрузка карточек остановилась");return@evaluateJavascript
+            if(!quietEnd&&idle>=NO_PROGRESS_DEADLINE_MS){
+                finishSync("Подгрузка карточек остановилась. Текущий сбор не сохранён",false)
+                return@evaluateJavascript
             }
             if(!viewportReady||quietEnd||now-viewportStableSince<SCROLL_SETTLE_MS){
                 schedule(g,CatalogStallPolicy.POLL_MS);return@evaluateJavascript
@@ -502,6 +496,10 @@ class CatalogSyncActivity:Activity(){
     companion object {
         // A moving or still-loading viewport never authorizes the next scroll step.
         private const val SCROLL_SETTLE_MS=700L
+        private const val SLOW_NOTICE_MS=20_000L
+        private const val NO_PROGRESS_DEADLINE_MS=120_000L
+        private const val WEBVIEW_REPLY_DEADLINE_MS=60_000L
+        private const val CATEGORY_DEADLINE_MS=900_000L
         // Official catalog's broad groups. Names are resolved to live links, not fixed IDs.
         private val primarySections=mapOf(
             "готовая еда" to "готовая еда","вся готовая еда" to "готовая еда",
