@@ -10,7 +10,7 @@ concurrency:
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 21
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,13 +123,35 @@ jobs:
               print("Блокер: за 50 секунд на витрине не появились поиск или категории."); raise SystemExit(3)
           if not (tap(rows,"Загрузить через сайт") or tap(rows,"Обновить каталог и цены")):
               print("Кнопка веб-обновления недоступна."); raise SystemExit(3)
-          for i in range(14):
-              time.sleep(7)
-              rows=observe(f"05-web-refresh-{i:02}")
-              statuses=[t.casefold() for t,_ in rows]
-              if any(t.startswith(("каталог не обновлён","сбор карточек завершён","ждём адрес доставки","сохранена неполная копия")) for t in statuses):
-                  break
-          print("Наблюдения собраны. Отдельно оценить статус каталога; этот запуск не подтверждает полный сбор.")
+          deadline=time.monotonic()+720
+          started=time.monotonic()
+          wanted="251C12884"
+          lastNote=""
+          while time.monotonic()<deadline:
+              trace=adb("logcat","-d","-s","SmartBasketCatalog:I","*:S",capture_output=True).stdout.decode("utf-8","replace")
+              rows=[line for line in trace.splitlines() if "SmartBasketCatalog:" in line]
+              open("evidence/catalog-routes.txt","w").write(trace)
+              if rows and rows[-1]!=lastNote:
+                  lastNote=rows[-1];print(lastNote,flush=True)
+              done=next((i for i,l in enumerate(rows) if f"finished category={wanted} " in l),None)
+              if done is not None:
+                  end=rows[done]
+                  score=re.search(r"cards=(\d+)",end)
+                  if not score or int(score[1])==0 or "filtered=false lost=false" not in end:
+                      print("Первый раздел не завершён пригодным для сохранения результатом: "+end,flush=True)
+                      observe("04-first-category-incomplete")
+                      raise SystemExit(4)
+                  later=rows[done+1:]
+                  if any("expected=" in l and f"expected={wanted} " not in l for l in later):
+                      print("Первый раздел дал "+score[1]+" карточек, началась следующая категория.",flush=True)
+                      observe("04-next-category")
+                      raise SystemExit(0)
+              elapsed=int(time.monotonic()-started)
+              if elapsed%60<8: print(f"Ожидаем первый раздел: {elapsed} с",flush=True)
+              time.sleep(8)
+          print("За 12 минут не подтвердилось завершение первого раздела и переход к следующему.",flush=True)
+          observe("04-end-of-wait")
+          raise SystemExit(5)
           PY
           adb logcat -d -s SmartBasketCatalog:I '*:S' | tee evidence/catalog-routes.txt
       - name: Upload emulator observations
