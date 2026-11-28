@@ -10,7 +10,7 @@ concurrency:
 jobs:
   catalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 21
+    timeout-minutes: 87
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,35 +123,53 @@ jobs:
               print("Блокер: за 50 секунд на витрине не появились поиск или категории."); raise SystemExit(3)
           if not (tap(rows,"Загрузить через сайт") or tap(rows,"Обновить каталог и цены")):
               print("Кнопка веб-обновления недоступна."); raise SystemExit(3)
-          deadline=time.monotonic()+720
+          import json
+          deadline=time.monotonic()+4500
           started=time.monotonic()
-          wanted="251C12884"
           lastNote=""
+          tick=0
           while time.monotonic()<deadline:
               trace=adb("logcat","-d","-s","SmartBasketCatalog:I","*:S",capture_output=True).stdout.decode("utf-8","replace")
-              rows=[line for line in trace.splitlines() if "SmartBasketCatalog:" in line]
+              log=[line for line in trace.splitlines() if "SmartBasketCatalog:" in line]
               open("evidence/catalog-routes.txt","w").write(trace)
-              if rows and rows[-1]!=lastNote:
-                  lastNote=rows[-1];print(lastNote,flush=True)
-              done=next((i for i,l in enumerate(rows) if f"finished category={wanted} " in l),None)
-              if done is not None:
-                  end=rows[done]
-                  score=re.search(r"cards=(\d+)",end)
-                  if not score or int(score[1])==0 or "filtered=false lost=false" not in end:
-                      print("Первый раздел не завершён пригодным для сохранения результатом: "+end,flush=True)
-                      observe("04-first-category-incomplete")
+              if log and log[-1]!=lastNote:
+                  lastNote=log[-1];print(lastNote,flush=True)
+              read=subprocess.run(["adb","exec-out","run-as","ru.smartbasket.app","cat","files/store-catalog.json"],
+                                  timeout=25,capture_output=True,check=False)
+              if read.returncode==0 and read.stdout.startswith(b"{"):
+                  try:
+                      catalog=json.loads(read.stdout)
+                  except json.JSONDecodeError:
+                      time.sleep(12)
+                      continue
+                  entries=catalog.get("entries") or []
+                  unique=len({row.get("url","").rstrip("/") for row in entries if row.get("url")})
+                  finished=len({match[1] for line in log if (match:=re.search(r"finished category=([A-Z0-9_-]+) cards=([1-9]\d*) filtered=false lost=false",line))})
+                  result={"source":catalog.get("source"),"categories":catalog.get("categories"),
+                          "failed":catalog.get("failed"),"items":len(entries),"unique_product_urls":unique,
+                          "verified_finished_categories":finished,
+                          "items_with_image_links":sum(bool(e.get("imageUrl")) for e in entries)}
+                  data=json.dumps(result,ensure_ascii=False,indent=2)
+                  open("evidence/catalog-summary.json","w").write(data+"\n")
+                  print("Сохранённый файл каталога прочитан: "+data,flush=True)
+                  if (result["source"]!="web" or result["failed"]!=0 or
+                      not result["categories"] or finished!=result["categories"] or not entries or unique!=len(entries)):
+                      observe("04-snapshot-incomplete")
                       raise SystemExit(4)
-                  later=rows[done+1:]
-                  if any("expected=" in l and f"expected={wanted} " not in l for l in later):
-                      print("Первый раздел дал "+score[1]+" карточек, началась следующая категория.",flush=True)
-                      observe("04-next-category")
-                      raise SystemExit(0)
-              elapsed=int(time.monotonic()-started)
-              if elapsed%60<8: print(f"Ожидаем первый раздел: {elapsed} с",flush=True)
-              time.sleep(8)
-          print("За 12 минут не подтвердилось завершение первого раздела и переход к следующему.",flush=True)
+                  observe("04-catalog-saved")
+                  raise SystemExit(0)
+              if tick%12==11:
+                  view=observe(f"04-progress-{tick:03}")
+                  if any(t.casefold().startswith(("каталог не обновлён","ждём адрес доставки","не удалось открыть")) for t,_ in view):
+                      print("Обновление остановилось до сохранения каталога.",flush=True)
+                      raise SystemExit(5)
+                  elapsed=int(time.monotonic()-started)
+                  print(f"Прошло {elapsed} с; сохранённого файла пока нет.",flush=True)
+              tick+=1
+              time.sleep(12)
+          print("За 75 минут сохранение полного каталога не подтвердилось.",flush=True)
           observe("04-end-of-wait")
-          raise SystemExit(5)
+          raise SystemExit(6)
           PY
           adb logcat -d -s SmartBasketCatalog:I '*:S' | tee evidence/catalog-routes.txt
       - name: Upload emulator observations
